@@ -1,0 +1,98 @@
+\documentclass[a4paper]{article}
+
+\usepackage[UTF8]{ctex}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{fancyvrb}           % 支持中文代码块
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{color}
+\usepackage{indentfirst}        % 首段缩进
+\setlength{\parindent}{2em}     % 缩进2字符
+\usepackage{zhnumber}           % 中文编号
+\usepackage[dvipsnames]{xcolor}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{algorithm2e}        % 支持algorithm[H]参数
+\usepackage{tcolorbox}          % 彩色文本框
+\tcbuselibrary{most}            % 加载所有tcolorbox库
+\usepackage{tikz}               % 支持绘图
+\usetikzlibrary{shapes,arrows}  % tikz图形库
+
+% algorithm2e配置
+\SetAlgorithmName{算法}{算法}{算法列表}
+\SetKwComment{Comment}{$\triangleright$\ }{}
+\SetAlgoLined
+
+% 定义简单的代码环境支持中文
+\newenvironment{code}
+{\verbatim}
+{\endverbatim}
+
+%\newcommand{\college}{中山大学计算机学院}
+\newcommand{\projname}{Proj 59 -- 面向多核实时系统的轻量化缓存感知型调度方法及实现}
+\newcommand{\reporttitle}{Yat-CASched设计开发文档}
+\newcommand{\teamno}{T202510558995172}
+\newcommand{\teamname}{从容应队}
+\newcommand{\projid}{Proj59}
+\newcommand{\members}{林炜东、马福泉、龙宇海}
+\newcommand{\schooladvisor}{赵帅}
+\newcommand{\projadvisor}{谢秀奇（华为）、成坚（华为）}
+\newcommand{\school}{中山大学}
+
+\pagestyle{fancy} % 使用 fancyhdr 风格
+\fancyhf{}      % 清空默认的页眉页脚
+
+% 设置页眉
+\fancyhead[L]{\kaishu \projid}      % 左侧页眉显示项目编号
+\fancyhead[C]{\kaishu \reporttitle}    % 中间页眉显示报告标题
+\fancyhead[R]{\kaishu \teamname} % 右侧页眉显示队伍名称
+
+% 设置页脚
+\fancyfoot[C]{第 \thepage 页，共 \pageref{LastPage} 页} % 中间页脚显示页码
+
+% 去除页眉页脚与正文之间的分隔线
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% 设置文档背景颜色
+\definecolor{mybgcolor}{RGB}{0, 0, 0} % 定义背景颜色
+\definecolor{NavyBlue}{RGB}{0,0,128} % 添加颜色定义
+\definecolor{lightblue}{RGB}{173,216,230} % 定义浅蓝色
+\definecolor{lightgreen}{RGB}{144,238,144} % 定义浅绿色
+% \pagecolor{mybgcolor} % 设置背景颜色
+
+\begin{document}
+
+% 封面
+\input{chapters/cover.tex}
+
+% 摘要
+\input{chapters/abstract.tex}
+
+\newpage
+
+% 目录
+\tableofcontents
+
+% 添加一级目录链接
+\input{chapters/navigation.tex}
+
+\newpage
+
+% 各章节内容
+\input{chapters/chapter1-intro.tex}
+\input{chapters/chapter2-realtime.tex}
+\input{chapters/chapter3-design.tex}
+\input{chapters/chapter4-theory.tex}
+\input{chapters/chapter5-kernel.tex}
+\input{chapters/chapter6-test.tex}
+\input{chapters/chapter7-difficulties.tex}
+\input{chapters/references.tex}
+
+\end{document}

@@ -1,0 +1,102 @@
+# ============================================================
+# Yat-CAShed 仓库根目录忽略规则
+# 说明：内核源码目录 linux-6.8-main/ 内另有其自身的 .gitignore，
+#       本文件仅用于屏蔽根目录下的构建产物、缓存与临时文件。
+# ============================================================
+
+# --- 通用构建产物 / 临时文件 ---
+*.log
+*.tmp
+*.temp
+*.swp
+*.orig
+*.rej
+*~
+\#*#
+.DS_Store
+Thumbs.db
+
+# --- 编译中间产物（内核 / 用户态测试程序） ---
+*.o
+*.o.*
+*.a
+*.so
+*.so.dbg
+*.ko
+*.mod
+*.mod.c
+*.lst
+*.dwo
+*.gcno
+*.symtypes
+*.symversions
+*.order
+*.d
+*.cmd
+*.bin
+
+# 内核顶层生成物
+linux-6.8-main/vmlinux
+linux-6.8-main/vmlinux.*
+linux-6.8-main/vmlinuz
+linux-6.8-main/System.map
+linux-6.8-main/Module.symvers
+linux-6.8-main/modules.order
+linux-6.8-main/modules.builtin
+linux-6.8-main/modules.builtin.modinfo
+linux-6.8-main/.config
+linux-6.8-main/.config.old
+linux-6.8-main/compile_commands.json
+linux-6.8-main/rust-project.json
+
+# --- yat_casched 测试环境生成物（由 yat_test_scripts 重新生成） ---
+linux-6.8-main/cache_test
+linux-6.8-main/test_chroot/
+linux-6.8-main/initramfs/bin/
+linux-6.8-main/initramfs_fixed/bin/
+linux-6.8-main/initramfs_fixed/etc/
+linux-6.8-main/initramfs_fixed/lib/
+linux-6.8-main/initramfs_fixed/lib64/
+linux-6.8-main/yat_simple_test_env/initramfs/bin/
+linux-6.8-main/boot_test_scripts/yat_simple_test
+linux-6.8-main/test_visualization/debug_scheduler
+linux-6.8-main/test_visualization/performance_test
+
+# --- Java 模拟器 ---
+simulator/out/
+simulator/bin/
+simulator/build/
+simulator/*.class
+simulator/**/*.class
+*.jar
+!simulator/lib/*.jar
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- LaTeX 编译产物（保留 .tex / .pdf 源与成品） ---
+report/**/*.aux
+report/**/*.bbl
+report/**/*.blg
+report/**/*.fls
+report/**/*.fdb_latexmk
+report/**/*.lof
+report/**/*.lot
+report/**/*.nav
+report/**/*.snm
+report/**/*.toc
+report/**/*.vrb
+report/**/*.synctex.gz
+report/**/*.xdv
+report/**/*.bcf
+report/**/*.run.xml
+
+# --- 编辑器 / IDE ---
+.vscode/
+.idea/
+*.code-workspace

@@ -1,0 +1,60 @@
+% 第三章：整体框架
+% 负责人：马福泉
+
+\section{整体框架} \label{sec:design}
+
+\subsection{系统架构}
+
+Yat-CASched调度器采用分层架构设计，主要包括以下模块：
+
+\begin{itemize}
+    \item \textbf{任务管理模块}：负责DAG任务的解析、存储和管理
+    \item \textbf{缓存建模模块}：实现Cache Recency Profile (CRP)预测模型
+    \item \textbf{调度决策模块}：基于MSF和LCIF规则进行核心分配
+    \item \textbf{运行时监控模块}：跟踪任务执行状态和缓存使用情况
+    \item \textbf{性能评估模块}：收集性能指标并进行分析
+\end{itemize}
+
+\subsection{数据结构设计}
+
+\subsubsection{任务表示}
+
+\begin{code}
+struct DAGTask {
+    int task_id;
+    vector<Node> nodes;
+    vector<Edge> edges;
+    int period;
+    int priority;
+    int total_workload;
+};
+
+struct Node {
+    int node_id;
+    int wcet;
+    vector<int> predecessors;
+    vector<int> successors;
+};
+\end{code}
+
+\subsubsection{调度状态}
+
+\begin{code}
+struct SchedulingState {
+    vector<Core> cores;
+    map<int, int> allocation_history;
+    SpeedupTable speedup_table;
+    CacheRecencyProfile crp_model;
+};
+\end{code}
+
+\subsection{接口设计}
+
+调度器提供以下主要接口：
+
+\begin{itemize}
+    \item \texttt{schedule\_tasks()}: 主调度函数
+    \item \texttt{update\_crp\_model()}: 更新CRP模型
+    \item \texttt{calculate\_speedup()}: 计算加速比
+    \item \texttt{allocate\_core()}: 核心分配决策
+\end{itemize}

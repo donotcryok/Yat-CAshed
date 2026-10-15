@@ -1,0 +1,13 @@
+# Compiled classes
+classes/
+
+# Experiment results and generated charts
+result/
+*.csv
+*.png
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store

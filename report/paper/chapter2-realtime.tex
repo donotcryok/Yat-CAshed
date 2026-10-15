@@ -1,0 +1,37 @@
+% 第二章：实时系统知识
+% 负责人：马福泉
+
+\section{实时系统知识} \label{sec:realtime}
+
+\subsection{实时系统基础}
+
+实时系统是指系统的正确性不仅依赖于计算结果的逻辑正确性，还依赖于产生结果的时间。根据时间约束的严格程度，实时系统可分为：
+
+\begin{itemize}
+    \item \textbf{硬实时系统}：任务必须在截止时间前完成，否则系统失效
+    \item \textbf{软实时系统}：任务偶尔超过截止时间是可以接受的
+    \item \textbf{坚实时系统}：介于硬实时和软实时之间
+\end{itemize}
+
+\subsection{多核实时调度理论}
+
+在多核环境下，实时调度面临以下挑战：
+
+\begin{enumerate}
+    \item \textbf{负载均衡}：如何在多个核心间合理分配任务
+    \item \textbf{缓存一致性}：多核间的缓存同步开销
+    \item \textbf{任务依赖}：DAG任务间的前驱后继关系
+    \item \textbf{实时性保证}：确保任务在截止时间前完成
+\end{enumerate}
+
+\subsection{缓存层次结构}
+
+现代多核处理器采用多级缓存架构：
+
+\begin{itemize}
+    \item \textbf{L1缓存}：容量小、速度快、每个核心独享
+    \item \textbf{L2缓存}：容量中等、集群内核心共享
+    \item \textbf{L3缓存}：容量大、所有核心共享
+\end{itemize}
+
+缓存的命中率直接影响任务的执行时间，因此缓存感知调度对于提升系统性能至关重要。
