@@ -13,7 +13,7 @@
 ### 1. 构建测试环境
 
 ```bash
-cd /home/yatsched/linux-6.8/boot_test_scripts
+cd ~/LAB_ungraduate/Yat-CAShed/linux-6.8-main/boot_test_scripts
 ./build_yat_simple_test.sh
 ```
 

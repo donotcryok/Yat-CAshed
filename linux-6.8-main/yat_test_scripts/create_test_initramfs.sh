@@ -3,7 +3,9 @@
 # 创建包含测试程序的 initramfs
 echo "=== 创建包含 Yat_Casched 测试程序的 initramfs ==="
 
-cd /home/yatsched/linux-6.8
+# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
+KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$KERNEL_DIR"
 
 # 检查测试程序是否存在，如果不存在则编译
 echo "🔧 检查和编译测试程序..."

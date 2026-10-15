@@ -4,7 +4,7 @@
 
 ### ⭐ 推荐：直接启动测试环境（包含所有测试程序）
 ```bash
-cd /home/yatsched/linux-6.8/yat_test_scripts
+cd ~/LAB_ungraduate/Yat-CAShed/linux-6.8-main/yat_test_scripts
 ./start_test_environment.sh
 ```
 
@@ -92,7 +92,7 @@ sudo apt install busybox-static gcc cpio gzip qemu-system-x86
 
 ### 编译测试程序
 ```bash
-cd /home/yatsched/linux-6.8
+cd ~/LAB_ungraduate/Yat-CAShed/linux-6.8-main
 gcc -O2 -static -o boot_test_scripts/test_yat_core_functions boot_test_scripts/test_yat_core_functions.c
 gcc -O2 -static -o boot_test_scripts/test_yat_hash_operations boot_test_scripts/test_yat_hash_operations.c
 ```

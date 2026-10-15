@@ -7,9 +7,9 @@ set -e
 
 echo "=== YAT_CASCHED 简化测试环境构建 ==="
 
-# 工作目录
-WORK_DIR="/home/yatsched/linux-6.8"
-SCRIPT_DIR="$WORK_DIR/boot_test_scripts"
+# 工作目录（本脚本位于 <内核根>/boot_test_scripts）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_DIR="$WORK_DIR/yat_simple_test_env"
 INITRAMFS_DIR="$TEST_DIR/initramfs"
 

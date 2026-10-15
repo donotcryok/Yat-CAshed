@@ -10,7 +10,7 @@ echo "📋 测试步骤："
 echo ""
 
 echo "1️⃣ 启动测试环境"
-echo "cd /home/yatsched/linux-6.8/yat_test_scripts"
+echo "cd <内核源码根>/yat_test_scripts"
 echo "qemu-system-x86_64 -nographic -m 1024 -kernel ../vmlinux -initrd test_with_programs.cpio.gz -append \"console=ttyS0,115200\" -accel tcg"
 echo ""
 

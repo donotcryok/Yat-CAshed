@@ -3,7 +3,9 @@
 echo "=== Yat_Casched 测试环境启动脚本 ==="
 echo ""
 
-cd /home/yatsched/linux-6.8
+# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
+KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$KERNEL_DIR"
 
 # 检查内核文件
 if [ ! -f "vmlinux" ]; then

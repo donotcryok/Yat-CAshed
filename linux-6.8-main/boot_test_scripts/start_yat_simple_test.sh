@@ -7,9 +7,9 @@ set -e
 
 echo "=== YAT_CASCHED QEMU测试启动 ==="
 
-# 配置路径
-WORK_DIR="/home/yatsched/linux-6.8"
-SCRIPT_DIR="$WORK_DIR/boot_test_scripts"
+# 配置路径（本脚本位于 <内核根>/boot_test_scripts）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 KERNEL="$WORK_DIR/vmlinux"
 INITRAMFS="$SCRIPT_DIR/yat_simple_test.cpio.gz"
 LOG_FILE="$SCRIPT_DIR/yat_simple_qemu.log"

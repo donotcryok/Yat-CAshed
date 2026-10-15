@@ -3,7 +3,9 @@
 # Yat_Casched 快速测试脚本
 # 使用静态 busybox 启动 QEMU 测试环境
 
-cd /home/yatsched/linux-6.8
+# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
+KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$KERNEL_DIR"
 
 echo "=== Yat_Casched 快速测试启动 ==="
 echo "时间: $(date)"
