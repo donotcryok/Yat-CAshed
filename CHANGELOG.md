@@ -155,6 +155,24 @@
     `git ls-files | wc -l` = 83568、`.S` = 1326、`.tc` = 116、残留 CRLF = 0、
     `scripts/as-version.sh` 权限 `-rwxr-xr-x`；随后 `make tinyconfig` → `make vmlinux`
     **一次通过，0 error / 0 warning**。即不再需要任何 `/tmp` 副本或手工修复。
+- **隐性损坏修复**（第二轮审计：与上游逐文件 `filecmp` 比对后发现）：
+  - **15 个断链符号链接**恢复为真正的 symlink（git 模式 `100644`→`120000`）：
+    `scripts/dummy-tools/{nm,objcopy}`、`scripts/dtc/include-prefixes/*`（12 个）、
+    `Documentation/Changes`。上游全树 64 个 symlink 本仓库一个都没保留，
+    其中这 15 个是纯断链；`include-prefixes` 断链会让 **`make dtbs` 必然失败**
+    （`vmlinux` 不经过 dtc，故此前未暴露）。
+  - **13 组「仅大小写不同」的同名文件内容互相覆盖**（大小写不敏感文件系统
+    clone 所致），已按上游还原。例：`include/uapi/linux/netfilter/xt_dscp.h`
+    里实际写的是 `xt_DSCP.h` 的内容，头文件保护宏与结构体名全部错位；
+    `Z6.0+pooncelock+poonceLock+pombonce.litmus` 的 `Result:` 断言被改错
+    （`Never` → `Sometimes`）；`net/netfilter/xt_{DSCP,HL,rateest,tcpmss}.c` 同理。
+  - `init/Kconfig` 中 YAT 配置块由 4 空格改为 **Tab**（符合内核 Kconfig 规范，
+    即 ROADMAP A4 记录的问题）。
+  - **修复后与上游的内容差异仅剩 11 个文件**（`.gitignore`、`sched.h`、`core.c`、
+    `init/Kconfig`、`init_task.c`、`main.c`、`vmlinux.lds.h`、`realmode/init.c`、
+    `sched/Makefile`、`uapi/sched.h`、`include/linux/sched.h`），
+    全部是有意为之的 Yat 改动——「我们改了什么」有了机械可验证的边界。
+    详见 [docs/CONFLICT_ANALYSIS.md](docs/CONFLICT_ANALYSIS.md) §8.6.7。
 - `make -C simulator test` → **58 项断言全部通过**。
 - `make -C simulator verify` → 编译通过、依赖自检通过、单测通过、快速实验通过。
 - `make -C simulator run-quick`（种子 42）：Makespan 平均改善 **17.36%**，

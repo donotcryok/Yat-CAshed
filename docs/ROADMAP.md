@@ -38,6 +38,10 @@
 - 修掉 `.gitignore` 四类误伤：`*.s`→`.S`、`*.d`→`test.d`/`conf.d` 目录、
   `tags`→`selftests/arm64/tags/` 目录、`*.log`→kunit `test_data/*.log`。
 - **全新 clone 直接 `make vmlinux` 一次通过**（0 error / 0 warning）。
+- 第二轮审计再修两类**不报错但语义已错**的损坏：15 个断链 symlink
+  （`scripts/dtc/include-prefixes/*` 断链会让 `make dtbs` 必失败）、
+  13 组大小写冲突导致的内容错位（如 `xt_dscp.h` 里写的是 `xt_DSCP.h` 的内容）。
+  修复后与上游的内容差异仅剩 11 个文件，全部是有意为之的 Yat 改动。
 
 详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7、§8.4、§8.5、§8.6。
 
@@ -67,7 +71,8 @@
 - `include/asm-generic/vmlinux.lds.h:135` 手工插入 `__yat_casched_sched_class` 段，
   顺序错误会被 `core.c:9951` 的 `BUG_ON` 直接 panic。建议加注释与编译期断言说明约束。
 - `kernel/sched/sched.h` 重复 include（已修一处），建议通查。
-- `init/Kconfig` 的配置项**缩进用了空格**而非 Tab，且位置不在 `kernel/sched/Kconfig`，风格不符内核规范。
+- ~~`init/Kconfig` 的配置项**缩进用了空格**而非 Tab~~ ✅ **已改为 Tab**。
+  仍待办：位置不在 `kernel/sched/Kconfig`，风格上仍不符内核惯例。
 
 ### A5. 并发与内存安全审查（P2）
 重点审查 dev 版的全局单点调度路径：

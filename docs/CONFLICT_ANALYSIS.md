@@ -387,7 +387,7 @@ $ make O=/tmp/freshbuild -j12 vmlinux
 
 即：**一个全新的 clone，不需要任何额外补丁或手工修复，`make vmlinux` 直接成功。**
 
-#### 8.6.6 回归验证
+#### 8.6.6 回归验证（第一轮）
 
 ```
 $ make check                    → ✅ 健康检查通过
@@ -396,12 +396,72 @@ $ bash scripts/check_symbols.sh → ✅ 符号一致性检查通过（26/26/17�
 $ make -C simulator test        → 通过: 58   失败: 0
 ```
 
-#### 8.6.7 提交拆分
+#### 8.6.7 隐性损坏：符号链接与大小写冲突（第二轮审计）
 
-为了可审阅，本次改动拆成三个提交：
+首轮修复后 `vmlinux` 已能编译，但「能编译」不等于「内容正确」。与上游
+linux-6.8.0 逐文件 `filecmp` 比对后发现两类**不报错、但语义已错**的损坏。
+
+**① 全部 64 个符号链接被扁平化，其中 15 个断链**
+
+上游全树有 64 个 symlink，本仓库**一个都没保留**：全部变成「内容是目标
+路径字符串」的普通文件。49 个因内容被展开成真实文件而不影响使用，但
+15 个是纯粹断链：
+
+| 路径 | 指向 | 后果 |
+|---|---|---|
+| `scripts/dummy-tools/nm` | `ld` | 工具链探测降级路径失效 |
+| `scripts/dummy-tools/objcopy` | `ld` | 同上 |
+| `scripts/dtc/include-prefixes/{arc,arm,arm64,dt-bindings,microblaze,mips,nios2,openrisc,powerpc,riscv,sh,xtensa}` | `../../../arch/*/boot/dts` 等 | **dtc 找不到 dts include 路径，`make dtbs` 必失败** |
+| `Documentation/Changes` | `process/changes.rst` | 文档交叉引用失效 |
+
+`vmlinux` 目标不经过 dtc，所以此前完全没暴露。
+
+**② 13 组「仅大小写不同」的同名文件内容互相覆盖**
+
+上游存在 13 组仅大小写不同的文件（如同时有 `xt_DSCP.h` 与
+`xt_dscp.h`）。在大小写不敏感文件系统上 clone 时两者会互相覆盖，
+本仓库检入的是**大写文件的版本**：
+
+```
+include/uapi/linux/netfilter/xt_dscp.h      ← 实际内容是 xt_DSCP.h
+include/uapi/linux/netfilter/xt_MARK.h      ← 实际内容是 xt_mark.h
+net/netfilter/xt_DSCP.c                     ← 实际内容是 xt_dscp.c
+tools/memory-model/litmus-tests/Z6.0+...poonceLock+...  ← 断言 Never→Sometimes
+（共 13 个，详见提交 d1fee7ec3）
+```
+
+证据：修复前 `xt_dscp.h` 里写着 `#ifndef _XT_DSCP_TARGET_H` /
+`struct xt_DSCP_info`，头文件保护宏与结构体名全部错位。任何人
+`#include <linux/netfilter/xt_dscp.h>` 都会拿到错误定义。
+
+`vmlinux` 不编译 netfilter x_tables 模块，故同样未暴露。
+
+**修复方式**：15 个断链按上游 `readlink` 重建为 symlink（git 模式
+`100644` → `120000`）；13 个文件按上游内容还原。
+
+**修复后与上游的内容差异从 24 个降至 11 个**，且这 11 个全部是有意为之
+的 Yat 改动：
+
+```
+.gitignore                    arch/x86/realmode/init.c
+include/asm-generic/vmlinux.lds.h     include/linux/sched.h
+include/uapi/linux/sched.h    init/Kconfig
+init/init_task.c              init/main.c
+kernel/sched/Makefile         kernel/sched/core.c
+kernel/sched/sched.h
+```
+
+这样，「我们改了什么」有了机械可验证的边界——除这 11 个文件外，
+整树与上游 linux-6.8.0 逐字节一致。
+
+#### 8.6.8 提交拆分
+
+为了可审阅，本次改动拆成五个提交：
 
 | 提交 | 内容 |
 |------|------|
 | `chore(repo)` | 补齐此前未入库的工程文件（`.gitattributes`、`.editorconfig`、`Makefile`、`docs/`、`scripts/`、CI 配置）+ 新增 `normalize_eol.py` |
 | `fix(linux-6.8-main)` | 补齐 1487 个丢失文件、修 `.gitignore` 四处误伤、全树 CRLF→LF、恢复 1225 个 exec bit |
 | `chore(simulator,report,docs)` | 移除 29 个死依赖 JAR、删除 0 字节 `Yat-CAShed_new.tex`、模拟器与报告行尾统一 |
+| `docs` | 记录 §8.6 仓库完整性修复（本文档 + `CHANGELOG` + `ROADMAP` A1） |
+| `fix(linux-6.8-main)` 二 | 修 15 个断链 symlink（`100644`→`120000`）、修 13 处大小写冲突内容错位、`init/Kconfig` 缩进改 Tab |
