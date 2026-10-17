@@ -249,7 +249,145 @@ $ find . -name '*.S' | wc -l
 修复后 `git check-ignore arch/x86/kernel/head_64.S` 返回 `linux-6.8-main/.gitignore:49:!*.S`，
 即**不再被忽略**。补齐这 1326 个文件需一次独立提交（约 3 MB，多为 <5 KB 的小文件）。
 
-#### 回归验证
+---
+
+### 8.6 仓库完整性修复（工作区可直接 `make`）
+
+§8.5 的编译验证最初是在 `/tmp` 的干净内核树上做的，因为当时的**工作区本身不可编译**。
+§8.6 记录把工作区修到「clone 下来直接 `make vmlinux` 就能成功」的完整过程。
+
+#### 8.6.1 与上游 linux-6.8.0 的全量文件清单比对
+
+```
+上游文件数 = 83411
+本地文件数 = 82038
+缺失      = 1492
+```
+
+按扩展名分布：
+
+| 扩展名 | 数量 | 根因 |
+|--------|------|------|
+| `.S`   | 1326 | `.gitignore` 的 `*.s` 大小写不敏感连带忽略 |
+| `.tc`  | 110  | 根 `.gitignore` 的 `*.d` 匹配到了**目录** `test.d` |
+| `.log` | 23   | Yat 项目自定义的 `*.log` 吞掉了 kunit 的 `test_data/*.log` |
+| `.h`   | 9    | 文件名含大写字母（`xt_DSCP.h` 等），同 `*.s` 类问题 |
+| `.c`   | 6    | 同上（`xt_TCPMSS.c`、`nouveau/.../aux.c`） |
+| `.py`  | 4    | 未被忽略，纯粹未提交 |
+| `.pm`  | 3    | 未被忽略，纯粹未提交 |
+| 其他   | 11   | `Makefile`/`settings`/`config`/`.litmus`/`.conf`/`.gitignore` 等 |
+
+#### 8.6.2 `.gitignore` 的四类误伤（关键：目录必须先 negate）
+
+一个容易踩的坑：**当某个 glob 匹配到了目录本身时，`!` 无法再救回该目录下的文件**，
+必须先用 `!dir/` 把目录 negate 回来。本仓库有三处踩了这个坑：
+
+| # | 文件:行 | 原规则 | 误伤的**目录** | 后果 |
+|---|---------|--------|----------------|------|
+| 1 | `linux-6.8-main/.gitignore:44` | `*.s` | 连带所有 `.S` 文件 | 1326 个汇编源，vmlinux 无法链接 |
+| 2 | 根 `.gitignore:34` | `*.d` | `tools/testing/selftests/ftrace/test.d`、`.../alsa/conf.d` | 110 个 ftrace 自测 `.tc` 用例 + alsa 测试配置 |
+| 3 | `linux-6.8-main/.gitignore:127` | `tags` | `tools/testing/selftests/arm64/tags/` | arm64 内存标签测试整套源码（4 个文件） |
+| 4 | `linux-6.8-main/.gitignore:181` | `*.log`（Yat 自定义） | —（普通文件） | 23 个 kunit 期望输出快照 |
+
+修复方式（均带注释说明原因）：
+
+```gitignore
+# 1) linux-6.8-main/.gitignore
+!*.S
+
+# 2) 根 .gitignore —— 注意 `!**/*.d/` 必须写在 `*.d` 之后
+*.d
+!**/*.d/
+!**/*.d/**
+
+# 3) linux-6.8-main/.gitignore —— 把无锚点的 `tags` 收紧为根锚点
+/tags
+/TAGS
+!tools/testing/selftests/arm64/tags/
+!tools/testing/selftests/arm64/tags/**
+
+# 4) linux-6.8-main/.gitignore
+*.log
+!/tools/testing/kunit/test_data/*.log
+```
+
+验证：
+
+```
+$ git check-ignore  <1492 个缺失文件逐个检查>  → 被忽略 0 个
+$ git check-attr text -- .../pe-file.exe.debug  → text: unset（二进制）
+```
+
+#### 8.6.3 行尾归一化：`.gitattributes` + `scripts/normalize_eol.py`
+
+新增根 [`/.gitattributes`](../.gitattributes)：
+
+```gitattributes
+* text=auto eol=lf          # 默认：仓库内一律 LF
+*.png binary                # 二进制白名单，禁止任何转换
+...
+linux-6.8-main/**        text eol=lf   # 内核树强化
+linux-6.8-main/**/*.exe  binary        # ← 必须排在上面之后！
+```
+
+> **规则顺序陷阱**：`.gitattributes` 是「后面的覆盖前面的」。
+> 最初把 `linux-6.8-main/** text eol=lf` 写在二进制白名单之后，
+> 导致 `tools/perf/tests/pe-file.exe.debug`（PE/COFF 解析测试固件）
+> 被判定为文本，checkout 时会被转成 LF 从而破坏测试。
+> 已把内核树内的二进制例外移到通用规则**之后**，并用
+> `git check-attr text` 确认其结果为 `unset`。
+
+新增 [`scripts/normalize_eol.py`](../scripts/normalize_eol.py) 做一次性转换：
+多进程、跳过 `.git`/二进制扩展名、读前 8 KiB 检测 NUL 字节判定二进制、
+只处理确实含 `\r` 的文件。
+
+```
+$ python3 scripts/normalize_eol.py
+scanned 82132 files
+DONE: converted=81146 binary_skipped=4 failed=0
+```
+
+#### 8.6.4 可执行位恢复
+
+内核的 `scripts/*` 大量依赖 shebang，缺 `+x` 会导致
+`scripts/as-version.sh: Permission denied`。按「首行以 `#!` 开头」判定：
+
+```
+shebang_total = 1226      # 内核树内全部 shebang 脚本
+chmod_fixed   = 1225      # 本轮补上的
+already_exec  = 1
+```
+
+权限位已进入 git 索引（`100755`），clone 后自动保留。
+
+#### 8.6.5 全新 clone 直接编译验证（最强证据）
+
+```
+$ git clone --no-hardlinks <repo> /tmp/freshclone
+$ git ls-files | wc -l                             → 83568
+$ git ls-files '*.S' | wc -l                       → 1326
+$ git ls-files '*.tc' | wc -l                      → 116
+$ grep -rlP '\r$' --include='*.c' --include='*.h' --include='*.S' .  → 0
+$ ls -l scripts/as-version.sh                      → -rwxr-xr-x
+
+$ make O=/tmp/freshbuild tinyconfig                → exit 0
+$ ./scripts/config --enable SMP --enable SCHED_SMT \
+      --enable SCHED_MC --enable SCHED_CLASS_YAT_CASCHED
+$ make O=/tmp/freshbuild olddefconfig              → CONFIG_SMP=y
+$ make O=/tmp/freshbuild -j12 vmlinux
+  LD      vmlinux
+  NM      System.map
+  SORTTAB vmlinux
+  → vmlinux      11856568 字节
+  → System.map     527522 字节
+  → warning: 0    error: 0
+  → yat_* 符号   33 个（含 yat_casched_sched_class、
+                        pick_next_task_yat_casched 等）
+```
+
+即：**一个全新的 clone，不需要任何额外补丁或手工修复，`make vmlinux` 直接成功。**
+
+#### 8.6.6 回归验证
 
 ```
 $ make check                    → ✅ 健康检查通过
@@ -257,3 +395,13 @@ $ bash scripts/check_repo.sh    → ✅ 健康检查通过（无冲突标记）
 $ bash scripts/check_symbols.sh → ✅ 符号一致性检查通过（26/26/17）
 $ make -C simulator test        → 通过: 58   失败: 0
 ```
+
+#### 8.6.7 提交拆分
+
+为了可审阅，本次改动拆成三个提交：
+
+| 提交 | 内容 |
+|------|------|
+| `chore(repo)` | 补齐此前未入库的工程文件（`.gitattributes`、`.editorconfig`、`Makefile`、`docs/`、`scripts/`、CI 配置）+ 新增 `normalize_eol.py` |
+| `fix(linux-6.8-main)` | 补齐 1487 个丢失文件、修 `.gitignore` 四处误伤、全树 CRLF→LF、恢复 1225 个 exec bit |
+| `chore(simulator,report,docs)` | 移除 29 个死依赖 JAR、删除 0 字节 `Yat-CAShed_new.tex`、模拟器与报告行尾统一 |

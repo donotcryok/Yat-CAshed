@@ -20,17 +20,26 @@
 
 ## 1. 方向 A：内核调度器（`linux-6.8-main/`）
 
-### A1. 恢复可编译（P0）✅ 已完成（含真实编译验证）
+### A1. 恢复可编译（P0）✅ 已完成（含真实编译验证 + 仓库完整性修复）
 已按 **路线 A（决赛 AJLR 版）** 解决 10 处冲突：文件由 1791 行重建为约 1396 行、0 标记，
 并移除 HEAD 侧残留的 v2.2 全局调度逻辑与重复符号。
 
-**真实内核编译已验证通过**（`/tmp/linbuild` 独立副本）：
+**真实内核编译已验证通过**：
 `kernel/sched/yat_casched.o` = 14136 字节、0 error / 0 warning；
-`vmlinux` = 11856568 字节、0 error；`System.map` 含 56 个 `yat_*` 符号。
+`vmlinux` = 11856568 字节、0 error / 0 warning；`System.map` 含 33 个 `yat_*` 符号。
 前置条件：`CONFIG_SMP=y`（否则 `sched_class` 的 `balance`/`select_task_rq`/`pick_task`
-等成员与 `rq::cpu` 不存在），且需先把整树 CRLF 转 LF、补齐 125 个脚本可执行位。
+等成员与 `rq::cpu` 不存在）。
 
-详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7、§8.4、§8.5。
+**仓库完整性已修复**（此前只能在 `/tmp` 副本上编译，工作区不可编译）：
+- 新增 `.gitattributes`（`* text=auto eol=lf` + 二进制白名单，内核树内的
+  二进制例外排在通用规则之后），全树 CRLF→LF 81146 个文件。
+- 从上游补齐 1487 个丢失文件（1326 `.S` + 110 `.tc` + 22 `.log` + 其余），
+  恢复 1225 个 shebang 脚本的可执行位。
+- 修掉 `.gitignore` 四类误伤：`*.s`→`.S`、`*.d`→`test.d`/`conf.d` 目录、
+  `tags`→`selftests/arm64/tags/` 目录、`*.log`→kunit `test_data/*.log`。
+- **全新 clone 直接 `make vmlinux` 一次通过**（0 error / 0 warning）。
+
+详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7、§8.4、§8.5、§8.6。
 
 ### A2. 消除“声明/实现不一致”（P1）✅ 已完成
 - ✅ 已引入 [`scripts/check_symbols.sh`](../scripts/check_symbols.sh) 并接入 CI，静态比对

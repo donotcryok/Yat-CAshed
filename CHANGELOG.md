@@ -129,17 +129,32 @@
 - `bash scripts/check_symbols.sh` → 退出码 0，**白名单已全部清空**：
   头文件声明 26 / 非 static 定义 26 / static 定义 17；
   [A] 无非预期缺失、[B] 无非预期泄漏、[C] 无非预期不一致。
-- **内核真实编译验证通过**（在 `/tmp/linbuild` 独立副本上执行，不污染工作区）：
-  - 前置修复：整树 CRLF 转 LF（81130 文件）、`scripts/*` 补可执行位（125 文件）、
-    从上游补齐 1326 个缺失的 `.S` 汇编源文件。
+- **内核真实编译验证通过 —— 且工作区本身已可直接编译**：
   - 配置：`tinyconfig` + `CONFIG_SMP=y` + `CONFIG_SCHED_SMT=y` + `CONFIG_SCHED_MC=y`
     + `CONFIG_SCHED_CLASS_YAT_CASCHED=y`。
   - `make ARCH=x86_64 -j12 kernel/sched/yat_casched.o` → **14136 字节，0 error / 0 warning**。
-  - `make ARCH=x86_64 -j12 vmlinux` → **11856568 字节，0 error**；`System.map` 含 56 个 `yat_*` 符号。
-  - 顺带修掉 2 个 `-Wunused-function`：`yat_ready_pool_remove()` 接入出队路径、
-    `yat_ready_pool_destroy()` 标记 `__maybe_unused`。
+  - `make ARCH=x86_64 -j12 vmlinux` → **11856568 字节，0 error / 0 warning**；
+    `System.map`（527522 字节）含 33 个 `yat_*` 符号，包括 `yat_casched_sched_class`、
+    `select_task_rq_yat_casched`、`pick_next_task_yat_casched` 等。
+  - 顺带修掉 2 个 `-Wunused-function`：`yat_ready_pool_remove()` 接入出队路径
+    （这是一个真实的漏调度缺陷）、`yat_ready_pool_destroy()` 标记 `__maybe_unused`。
   - 注：`CONFIG_SMP=y` 为硬性前提（`sched_class` 的 `balance`/`select_task_rq`/`pick_task`
     等成员与 `rq::cpu` 均在 `#ifdef CONFIG_SMP` 内）。
+- **仓库完整性修复**（详见 [docs/CONFLICT_ANALYSIS.md](docs/CONFLICT_ANALYSIS.md) §8.6）：
+  - 新增 [`/.gitattributes`](.gitattributes)：`* text=auto eol=lf` + 二进制白名单，
+    并把内核树内的二进制例外排在通用规则**之后**（`gitattributes` 是后者覆盖前者）。
+  - 新增 [`scripts/normalize_eol.py`](scripts/normalize_eol.py)：全树 CRLF→LF，
+    `converted=81146 binary_skipped=4 failed=0`。
+  - 从上游 linux-6.8.0 补齐 **1487 个**丢失文件（1326 `.S` + 110 `.tc` + 22 `.log`
+    + 9 `.h` + 5 `.c` + 4 `.py` + 3 `.pm` + 其余），并删除 1 个 0 字节占位 `.tex`。
+  - 恢复 **1225 个** shebang 脚本的可执行位（`100755` 入索引，clone 后自动保留）。
+  - 修掉 `.gitignore` 的**四类误伤**（详见 §8.6.2）：`*.s`→`.S`、`*.d`→`test.d`/`conf.d` 目录、
+    `tags`→`selftests/arm64/tags/` 目录、Yat 自定义 `*.log`→kunit `test_data/*.log`。
+    其中前三类都属于「glob 匹配到目录后，`!` 无法救回其下文件」的陷阱，必须先 negate 目录。
+  - **全新 clone 直接编译验证**：`git clone --no-hardlinks` 到 `/tmp/freshclone`，
+    `git ls-files | wc -l` = 83568、`.S` = 1326、`.tc` = 116、残留 CRLF = 0、
+    `scripts/as-version.sh` 权限 `-rwxr-xr-x`；随后 `make tinyconfig` → `make vmlinux`
+    **一次通过，0 error / 0 warning**。即不再需要任何 `/tmp` 副本或手工修复。
 - `make -C simulator test` → **58 项断言全部通过**。
 - `make -C simulator verify` → 编译通过、依赖自检通过、单测通过、快速实验通过。
 - `make -C simulator run-quick`（种子 42）：Makespan 平均改善 **17.36%**，
@@ -161,14 +176,12 @@
 - ~~`yat_global_pool_*`（7 个）声明未实现~~ → **已从接口删除**
   （全树 grep 确认 `struct yat_global_task_pool`/`yat_global_task_node` 零引用、
   7 个函数零调用点；实际路径为 `global_ready_pool`）。`check_symbols.sh` 白名单同步清空。
-- **整树 CRLF 未在仓库内修正**：81147/82038 个文件以 CRLF 检入，`scripts/*` 另有 125 个
-  缺可执行位。本轮的编译验证是在 `/tmp/linbuild` 副本上「转 LF + 补 chmod」后完成的，
-  **工作区直接 `make` 仍会失败**。建议单独提交 `.gitattributes`（`* text=auto eol=lf`）
-  或执行一次全树 `dos2unix`。
-- **`.S` 汇编源文件未入库（已修规则，待补文件）**：`.gitignore` 的 `*.s` 在大小写不敏感
-  文件系统上连带忽略了 `.S`，导致 1326 个汇编源文件从未入库、`vmlinux` 无法链接。
-  已追加 `!*.S` 显式否定；补齐这 1326 个文件需一次独立提交（约 3 MB）。
-  详见 [docs/CONFLICT_ANALYSIS.md](docs/CONFLICT_ANALYSIS.md) §8.5。
+- ~~整树 CRLF 未在仓库内修正~~ → **已修复**：81146 个文件转 LF，`.gitattributes`
+  固化规则；1225 个脚本补 `100755`；1326 个 `.S` + 110 个 `.tc` + 其余共 1487 个
+  文件已补齐入库。**全新 clone 直接 `make vmlinux` 一次通过**（0 error / 0 warning）。
+  详见 [docs/CONFLICT_ANALYSIS.md](docs/CONFLICT_ANALYSIS.md) §8.6。
+- **历史提交仍含 CRLF**：本次只修正了 HEAD 之后的内容；若需彻底清理历史，
+  需 `git filter-repo` 之类的重写（会影响所有 fork，暂不做）。
 - **锁序需审查**：`balance_yat_casched()`（CPU0）在持 `yat_pool_lock` 时再 `rq_lock(target)`，
   与 `global_dag_lock` / `yat_accel_table.lock` 的相对顺序需用 `lockdep` 验证
   （见 [`docs/ROADMAP.md`](docs/ROADMAP.md) A5）。
