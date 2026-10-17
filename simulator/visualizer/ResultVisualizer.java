@@ -135,30 +135,35 @@ public class ResultVisualizer {
             
             System.out.println("📊 " + algo1 + " vs " + algo2 + " 综合对比:");
             
+            // 说明：algo1（Cache-Aware）为待评估算法，algo2（WFD）为基准算法。
+            // 越低越优的指标（执行时间 / Makespan）以 algo2 为分母计算相对改进，
+            // 正值表示 algo1 优于基准；负值表示劣于基准。
+            System.out.printf("  （基准: %s，正值表示 %s 更优）%n", algo2, algo1);
+
             // 执行时间改进
-            if (totalExecTime[0] != 0) {
-                double improvement = ((totalExecTime[0] - totalExecTime[1]) / totalExecTime[0]) * 100;
-                System.out.printf("  ⏱️  完整任务执行时间: %s%.2f%%\n", 
-                    improvement > 0 ? "改进 " : "提升", Math.abs(improvement));
+            if (totalExecTime[1] != 0) {
+                double improvement = ((totalExecTime[1] - totalExecTime[0]) / totalExecTime[1]) * 100;
+                System.out.printf("  ⏱️  完整任务执行时间: %s%.2f%%\n",
+                    improvement >= 0 ? "改进 " : "劣化 ", Math.abs(improvement));
             }
-            
-            if (avgExecTime[0] != 0) {
-                double improvement = ((avgExecTime[0] - avgExecTime[1]) / avgExecTime[0]) * 100;
-                System.out.printf("  ⏰ 平均任务执行时间: %s%.2f%%\n", 
-                    improvement > 0 ? "改进 " : "提升", Math.abs(improvement));
+
+            if (avgExecTime[1] != 0) {
+                double improvement = ((avgExecTime[1] - avgExecTime[0]) / avgExecTime[1]) * 100;
+                System.out.printf("  ⏰ 平均任务执行时间: %s%.2f%%\n",
+                    improvement >= 0 ? "改进 " : "劣化 ", Math.abs(improvement));
             }
-            
+
             // Makespan改进
-            if (makespan[0] != 0) {
-                double improvement = ((makespan[0] - makespan[1]) / makespan[0]) * 100;
-                System.out.printf("  📈 Makespan: %s%.2f%%\n", 
-                    improvement > 0 ? "改进 " : "增加 ", Math.abs(improvement));
+            if (makespan[1] != 0) {
+                double improvement = ((makespan[1] - makespan[0]) / makespan[1]) * 100;
+                System.out.printf("  📈 Makespan: %s%.2f%%\n",
+                    improvement >= 0 ? "改进 " : "劣化 ", Math.abs(improvement));
             }
-            
-            // 缓存命中率改进
-            double cacheImprovement = (cacheHit[1] - cacheHit[0]) * 100;
-            System.out.printf("  🗄️  缓存命中率: %s%.2f个百分点\n", 
-                cacheImprovement > 0 ? "提升 " : "降低 ", Math.abs(cacheImprovement));
+
+            // 缓存命中率改进（越高越优，直接作差）
+            double cacheImprovement = (cacheHit[0] - cacheHit[1]) * 100;
+            System.out.printf("  🗄️  缓存命中率: %s%.2f 个百分点\n",
+                cacheImprovement >= 0 ? "提升 " : "降低 ", Math.abs(cacheImprovement));
         }
     }
     

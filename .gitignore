@@ -32,8 +32,18 @@ Thumbs.db
 *.symversions
 *.order
 *.d
+# NOTE: 上面的 `*.d` 本意是屏蔽编译器生成的依赖文件（foo.d 普通文件），
+# 但它同样会匹配「名字以 .d 结尾的目录」。内核树里就有两个这样的目录：
+#   tools/testing/selftests/ftrace/test.d   （110 个 .tc 用例）
+#   tools/testing/selftests/alsa/conf.d     （alsa 测试配置）
+# 目录一旦被排除，其下文件无法再用 `!` 单独救回，必须先把目录本身 negate。
+!**/*.d/
+!**/*.d/**
 *.cmd
 *.bin
+
+# kunit 的 test_data/*.log 是测试输入数据，不是构建日志
+!linux-6.8-main/tools/testing/kunit/test_data/*.log
 
 # 内核顶层生成物
 linux-6.8-main/vmlinux
@@ -66,6 +76,8 @@ linux-6.8-main/test_visualization/performance_test
 simulator/out/
 simulator/bin/
 simulator/build/
+simulator/classes/
+simulator/result/
 simulator/*.class
 simulator/**/*.class
 *.jar

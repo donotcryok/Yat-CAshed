@@ -49,14 +49,20 @@ import visualizer.ResultVisualizer;
 public class AlgorithmComparisonExperiment {    
     // ==================== 实验配置常量 ====================
     
-    /** 系统处理器核心数量 */
-    private static final int CORES = 8;
+    /** 系统处理器核心数量（可通过 --cores= 覆盖） */
+    private static int CORES = 8;
     
-    /** 总测试案例数量 */
-    private static final int TOTAL_TEST_CASES = 100;
+    /** 总测试案例数量（可通过 --cases= 覆盖） */
+    private static int TOTAL_TEST_CASES = 100;
     
-    /** 每个测试案例的任务数量 */
-    private static final int TASKS_PER_CASE = 60;
+    /** 每个测试案例的任务数量（可通过 --tasks= 覆盖） */
+    private static int TASKS_PER_CASE = 60;
+
+    /** 随机种子（可通过 --seed= 覆盖，保证可复现） */
+    private static long SEED = 42;
+
+    /** 是否生成可视化（--no-viz 关闭；快速/CI 场景建议关闭） */
+    private static boolean ENABLE_VIZ = true;
     
     /** 
      * 系统利用率测试级别数组
@@ -89,7 +95,46 @@ public class AlgorithmComparisonExperiment {
      * 
      * @param args 命令行参数（当前未使用）
      */
+    /**
+     * 解析命令行参数，使实验规模/种子可配置（便于 CI 快速冒烟与可复现实验）。
+     *
+     * 支持:
+     *   --cores=N      处理器核心数（默认 8）
+     *   --cases=N      总测试案例数（默认 100）
+     *   --tasks=N      每案例任务数（默认 60）
+     *   --seed=N       随机种子（默认 42）
+     *   --no-viz       跳过 Python 可视化（快速/CI 场景）
+     *   -h, --help     打印帮助
+     */
+    private static void parseArgs(String[] args) {
+        for (String arg : args) {
+            try {
+                if (arg.equals("--no-viz")) {
+                    ENABLE_VIZ = false;
+                } else if (arg.equals("-h") || arg.equals("--help")) {
+                    System.out.println("用法: java AlgorithmComparisonExperiment "
+                        + "[--cores=N] [--cases=N] [--tasks=N] [--seed=N] [--no-viz]");
+                    System.exit(0);
+                } else if (arg.startsWith("--cores=")) {
+                    CORES = Math.max(1, Integer.parseInt(arg.substring(8)));
+                } else if (arg.startsWith("--cases=")) {
+                    TOTAL_TEST_CASES = Math.max(1, Integer.parseInt(arg.substring(8)));
+                } else if (arg.startsWith("--tasks=")) {
+                    TASKS_PER_CASE = Math.max(1, Integer.parseInt(arg.substring(8)));
+                } else if (arg.startsWith("--seed=")) {
+                    SEED = Long.parseLong(arg.substring(7));
+                } else {
+                    System.out.println("⚠️  忽略未知参数: " + arg);
+                }
+            } catch (NumberFormatException e) {
+                System.err.println("❌ 参数格式错误: " + arg + "（应为 --key=整数）");
+                System.exit(2);
+            }
+        }
+    }
+
     public static void main(String[] args) {
+        parseArgs(args);
         System.out.println("=== WFD vs CacheAware_v2算法性能对比实验 ===");
         System.out.println("🎯 目标：验证CacheAware_v2算法的性能优势");
         System.out.println("📊 实验规模: " + TOTAL_TEST_CASES + " 个测试案例");
@@ -150,7 +195,7 @@ public class AlgorithmComparisonExperiment {
         System.out.println("🚀 开始WFD vs CacheAware_v2对比实验...\n");
         
         // 初始化随机数生成器和任务生成器
-        Random rng = new Random(42); // 固定种子确保结果可重复
+        Random rng = new Random(SEED); // 固定种子确保结果可重复（可由 --seed= 覆盖）
         EnhancedTaskGenerator taskGenerator = new EnhancedTaskGenerator(CORES, rng);
         
         // 存储各算法的实验结果
@@ -166,8 +211,15 @@ public class AlgorithmComparisonExperiment {
         double totalCacheHitImprovement = 0.0;
         
         // 对每个利用率级别进行测试
-        for (double utilization : UTILIZATION_LEVELS) {
-            int testsPerLevel = TOTAL_TEST_CASES / UTILIZATION_LEVELS.length;
+        // 将总案例数尽量均匀分配到各利用率级别（修正整数除法导致案例被丢弃的问题）
+        int levels = UTILIZATION_LEVELS.length;
+        int baseTestsPerLevel = TOTAL_TEST_CASES / levels;
+        int remainder = TOTAL_TEST_CASES % levels;
+        for (int levelIdx = 0; levelIdx < levels; levelIdx++) {
+            double utilization = UTILIZATION_LEVELS[levelIdx];
+            // 前 remainder 个级别各多分 1 个案例，保证总数精确等于 TOTAL_TEST_CASES
+            int testsPerLevel = baseTestsPerLevel + (levelIdx < remainder ? 1 : 0);
+            testsPerLevel = Math.max(1, testsPerLevel);
             
             System.out.println("📊 测试利用率级别: " + utilization);
             
@@ -248,8 +300,12 @@ public class AlgorithmComparisonExperiment {
         generateReport(algorithmResults, cacheAwareWins, wfdWins, completedTests,
                       totalMakespanImprovement, totalCacheHitImprovement);
         
-        // 生成可视化图表
-        generateVisualization(algorithmResults);
+        // 生成可视化图表（快速/CI 场景可用 --no-viz 跳过）
+        if (ENABLE_VIZ) {
+            generateVisualization(algorithmResults);
+        } else {
+            System.out.println("ℹ️  已通过 --no-viz 跳过可视化生成");
+        }
         
         // 重置算法状态
         WFD.resetLoads();
@@ -489,34 +545,47 @@ public class AlgorithmComparisonExperiment {
         System.out.println("\n🐍 启动Python数据可视化处理...");
         
         try {
-            // 检查Python环境
-            ProcessBuilder pythonCheck = new ProcessBuilder("python", "--version");
-            pythonCheck.directory(new File("."));
-            Process checkProcess = pythonCheck.start();
-            int checkResult = checkProcess.waitFor();
-            
-            if (checkResult != 0) {
-                System.out.println("⚠️  Python未找到，尝试使用python3...");
-                pythonCheck = new ProcessBuilder("python3", "--version");
-                checkProcess = pythonCheck.start();
-                checkResult = checkProcess.waitFor();
-                
-                if (checkResult != 0) {
-                    System.out.println("❌ Python环境未找到，跳过Python可视化");
-                    return;
+            // 检查Python环境：优先 python3，回退 python（修正原逻辑把成功命令选反的缺陷）
+            String pythonCommand = null;
+            for (String candidate : new String[]{"python3", "python"}) {
+                try {
+                    Process checkProcess =
+                            new ProcessBuilder(candidate, "--version").directory(new File(".")).start();
+                    if (checkProcess.waitFor() == 0) {
+                        pythonCommand = candidate;
+                        break;
+                    }
+                } catch (Exception ignore) {
+                    // 该候选命令不存在，继续尝试下一个
                 }
-            }            // 运行Python可视化脚本
-            String pythonCommand = checkResult == 0 ? "python" : "python3";
-            
-            ProcessBuilder pb = new ProcessBuilder(pythonCommand, "visualizer/visualize_results.py", csvPath);
+            }
+
+            if (pythonCommand == null) {
+                System.out.println("⚠️  未找到 python3/python，跳过Python可视化（不影响实验结果）");
+                return;
+            }
+
+            // 运行Python可视化脚本；继承标准错误以便观察脚本报错
+            ProcessBuilder pb = new ProcessBuilder(pythonCommand, "visualizer/visualize.py", csvPath);
             pb.directory(new File("."));
-            // 不显示Python输出，保持静默
+            pb.redirectErrorStream(true);
             Process process = pb.start();
-            int result = process.waitFor();            
-            // Python可视化执行完成，不显示额外信息
-              } catch (Exception e) {
+            // 实时转发脚本输出（避免静默失败导致“无图表”难以察觉）
+            try (java.io.BufferedReader reader =
+                         new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("   [viz] " + line);
+                }
+            }
+            int result = process.waitFor();
+            if (result != 0) {
+                System.err.println("❌ Python可视化脚本以非零码退出: " + result
+                        + "（CSV 已生成，可手动重跑）");
+            }
+        } catch (Exception e) {
             System.err.println("❌ Python可视化处理失败: " + e.getMessage());
-            System.out.println("💡 可以手动运行: python visualizer/visualize_results.py " + csvPath);
+            System.out.println("💡 可以手动运行: python3 visualizer/visualize.py " + csvPath);
         }
     }
 }

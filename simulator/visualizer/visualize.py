@@ -212,8 +212,13 @@ class AlgorithmVisualizer:
         # 3. Box plot comparison (bottom left)
         ax3 = axes[1, 0]
         data_for_box = [makespan_data[algo] for algo in self.algorithms]
-        box_plot = ax3.boxplot(data_for_box, labels=self.algorithms, 
-                              patch_artist=True, notch=True)
+        box_plot = ax3.boxplot(data_for_box, patch_artist=True, notch=True)
+        # 兼容 matplotlib <3.9 / >=3.9（labels 已弃用并移除，改用 tick_labels）
+        try:
+            ax3.set_xticks(range(1, len(self.algorithms) + 1))
+            ax3.set_xticklabels(self.algorithms)
+        except Exception:
+            pass
         
         # Beautify box plot
         for patch, color in zip(box_plot['boxes'], colors):
@@ -306,8 +311,13 @@ class AlgorithmVisualizer:
         # 3. Box plot comparison (bottom left)
         ax3 = axes[1, 0]
         data_for_box = [cache_data[algo] for algo in self.algorithms]
-        box_plot = ax3.boxplot(data_for_box, labels=self.algorithms, 
-                              patch_artist=True, notch=True)
+        box_plot = ax3.boxplot(data_for_box, patch_artist=True, notch=True)
+        # 兼容 matplotlib <3.9 / >=3.9（labels 已弃用并移除，改用 tick_labels）
+        try:
+            ax3.set_xticks(range(1, len(self.algorithms) + 1))
+            ax3.set_xticklabels(self.algorithms)
+        except Exception:
+            pass
         
         # Beautify box plot
         for patch, color in zip(box_plot['boxes'], colors):
