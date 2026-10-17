@@ -1,0 +1,31 @@
+Yat-Casched 项目许可说明
+=========================
+
+本项目由多个部分组成，各部分适用不同的许可条款。
+
+1. Linux 内核部分（linux-6.8-main/ 目录）
+-----------------------------------------
+该目录包含 Linux 6.8 内核源码，其中在本项目内新增/修改的调度器相关文件
+（如 kernel/sched/yat_casched.c、include/linux/sched/yat_casched.h 及内核集成改动）
+遵循 Linux 内核的许可条款：GNU General Public License version 2.0 (GPL-2.0)。
+
+完整条款见 linux-6.8-main/COPYING，以及 linux-6.8-main/LICENSES/ 目录。
+
+2. 调度器模拟器（simulator/ 目录）
+----------------------------------
+本项目自主编写的 Java 源码（allocation/、analyzer/、entity/、generator/、
+parameters/、visualizer/ 及顶层 *.java）用于学术研究与教学目的。
+simulator/lib/ 下的第三方 JAR 归其各自作者所有，遵循各自的许可协议。
+
+3. 论文、报告与文档（report/ 目录、docs/ 目录、各 README）
+----------------------------------------------------------
+本项目自主撰写的论文、报告与文档用于学术研究与教学目的，引用或转载请注明出处。
+report/ 目录中引用的参考论文（如 AJLR / RTNS'23 等 PDF）版权归原作者所有，
+本项目仅作学习研究之用，不再分发。
+
+4. 免责声明
+-----------
+本项目按“原样”提供，不附带任何明示或暗示的担保。使用本项目代码或文档所产生的
+任何后果，由使用者自行承担。
+
+如有许可相关疑问，请在仓库中提出 issue 讨论。

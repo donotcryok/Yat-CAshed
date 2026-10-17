@@ -1,0 +1,86 @@
+# ============================================================
+# Yat-CAshed 行尾与二进制文件归一化规则
+# ------------------------------------------------------------
+# 背景：本仓库的 linux-6.8-main/ 整树曾以 CRLF 检入
+#       （81147/82038 个文件），导致 `make tinyconfig`
+#       在 init/Kconfig:9 直接报 syntax error。
+#
+# 策略：
+#   1. 默认所有文本文件在**仓库内**统一存为 LF，
+#      检出于工作区时也按 LF（eol=lf），避免跨平台漂移。
+#   2. 明确声明二进制文件，禁止 Git 做任何行尾转换，
+#      否则会损坏图片/压缩包/字体等。
+#   3. 内核源码树（linux-6.8-main/）上游即 LF，单独强化一遍。
+#
+# 生效方式：
+#   已有工作区若仍是 CRLF，需执行一次归一化：
+#     git add --renormalize .
+#   或按 .gitattributes 重写工作区：
+#     git rm --cached -r . && git reset --hard
+# ============================================================
+
+# ---------- 默认：文本文件统一 LF ----------
+* text=auto eol=lf
+
+# ---------- 明确的二进制类型（禁止行尾转换）----------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.bmp       binary
+*.ico       binary
+*.svg       binary
+*.pdf       binary
+*.pptx      binary
+*.docx      binary
+*.xlsx      binary
+*.zip       binary
+*.gz        binary
+*.xz        binary
+*.bz2       binary
+*.7z        binary
+*.tar       binary
+*.jar       binary
+*.class     binary
+*.o         binary
+*.a         binary
+*.so        binary
+*.exe       binary
+*.dll       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary
+*.ttc       binary
+*.eot       binary
+*.pyc       binary
+
+# ---------- 内核源码树：上游即 LF，强化 ----------
+linux-6.8-main/**                text eol=lf
+linux-6.8-main/**/*.S            text eol=lf
+linux-6.8-main/**/*.s            text eol=lf
+linux-6.8-main/**/*.c            text eol=lf
+linux-6.8-main/**/*.h            text eol=lf
+linux-6.8-main/**/Kconfig*       text eol=lf
+linux-6.8-main/**/Makefile*      text eol=lf
+linux-6.8-main/**/*.rst          text eol=lf
+linux-6.8-main/**/*.yaml         text eol=lf
+linux-6.8-main/**/*.dts          text eol=lf
+linux-6.8-main/**/*.dtsi         text eol=lf
+linux-6.8-main/**/*.lds          text eol=lf
+
+# 内核中的二进制/生成物
+linux-6.8-main/**/*.bin          binary
+linux-6.8-main/**/*.dtb          binary
+
+# ---------- 脚本必须保持 LF，否则 shebang 失效 ----------
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.py        text eol=lf
+*.pl        text eol=lf
+*.pm        text eol=lf
+
+# ---------- Windows 专用脚本保留 CRLF ----------
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
