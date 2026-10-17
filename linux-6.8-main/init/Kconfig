@@ -1994,10 +1994,10 @@ config ARCH_HAS_NON_OVERLAPPING_ADDRESS_SPACE
 config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
 	bool
 config SCHED_CLASS_YAT_CASCHED
-    bool "YAT_CASCHED(Cache Awareness) sched class"
-    default n
-    help
-      A scheduling mechanism based on cache awareness.
+	bool "YAT_CASCHED(Cache Awareness) sched class"
+	default n
+	help
+	  A scheduling mechanism based on cache awareness.
 # It may be useful for an architecture to override the definitions of the
 # SYSCALL_DEFINE() and __SYSCALL_DEFINEx() macros in <linux/syscalls.h>
 # and the COMPAT_ variants in <linux/compat.h>, in particular to use a
