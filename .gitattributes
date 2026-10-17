@@ -56,6 +56,8 @@
 *.pyc       binary
 
 # ---------- 内核源码树：上游即 LF，强化 ----------
+# 注意：gitattributes 规则「后面的覆盖前面的」。因此必须先给出内核树
+# 的通用 text 规则，再给出其中的二进制例外，顺序不能颠倒。
 linux-6.8-main/**                text eol=lf
 linux-6.8-main/**/*.S            text eol=lf
 linux-6.8-main/**/*.s            text eol=lf
@@ -69,9 +71,31 @@ linux-6.8-main/**/*.dts          text eol=lf
 linux-6.8-main/**/*.dtsi         text eol=lf
 linux-6.8-main/**/*.lds          text eol=lf
 
-# 内核中的二进制/生成物
+# 内核树内的二进制「例外」——必须排在上面通用规则之后才生效。
+# tools/perf/tests/pe-file.exe(.debug) 是 PE/COFF 解析测试的固件，
+# 若被转成 LF 会破坏测试；bpf 的 .bin、dtb、固件同理。
+linux-6.8-main/**/*.exe          binary
+linux-6.8-main/**/*.exe.debug    binary
 linux-6.8-main/**/*.bin          binary
 linux-6.8-main/**/*.dtb          binary
+linux-6.8-main/**/*.dtbo         binary
+linux-6.8-main/**/*.so           binary
+linux-6.8-main/**/*.a            binary
+linux-6.8-main/**/*.o            binary
+linux-6.8-main/**/*.ko           binary
+linux-6.8-main/**/*.gz           binary
+linux-6.8-main/**/*.xz           binary
+linux-6.8-main/**/*.bz2          binary
+linux-6.8-main/**/*.lz4          binary
+linux-6.8-main/**/*.lzma         binary
+linux-6.8-main/**/*.lzo          binary
+linux-6.8-main/**/*.zst          binary
+linux-6.8-main/**/*.png          binary
+linux-6.8-main/**/*.jpg          binary
+linux-6.8-main/**/*.gif          binary
+linux-6.8-main/**/*.pdf          binary
+linux-6.8-main/**/*.rlib         binary
+linux-6.8-main/**/*.rmeta        binary
 
 # ---------- 脚本必须保持 LF，否则 shebang 失效 ----------
 *.sh        text eol=lf

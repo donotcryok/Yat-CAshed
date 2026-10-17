@@ -73,9 +73,6 @@
 #include <trace/events/power.h>
 #include <trace/events/sched.h>
 
-#include <linux/sched/yat_casched.h>
-
-
 #include "../workqueue_internal.h"
 
 #ifdef CONFIG_PARAVIRT

@@ -100,22 +100,6 @@ struct yat_job {
     struct task_struct *task;      /* 关联的任务 */
 };
 
-/* 全局优先队列节点 */
-struct yat_global_task_node {
-    struct list_head list;         /* 链表节点 */
-    struct task_struct *task;      /* 任务指针 */
-    int priority;                  /* 优先级 */
-    u64 wcet;                      /* WCET */
-    u64 enqueue_time;              /* 入队时间 */
-};
-
-/* 全局优先队列 */
-struct yat_global_task_pool {
-    struct list_head head;         /* 队列头 */
-    spinlock_t lock;               /* 队列锁 */
-    unsigned int nr_tasks;         /* 队列中任务数 */
-};
-
 struct sched_yat_casched_entity {
     struct list_head run_list;      /* 运行队列链表节点 */
     u64 vruntime;                   /* 虚拟运行时间 */
@@ -137,7 +121,6 @@ struct yat_casched_rq {
     
     /* 全局调度结构 */
     struct yat_ready_job_pool *ready_pool;            /* 就绪作业池 */
-    struct yat_global_task_pool *global_pool;         /* 全局优先队列 (兼容性) */
     struct yat_accel_table *accel_table;              /* 加速表 */
     struct yat_cpu_history_table history_tables[NR_CPUS]; /* CPU历史表 */
 };
@@ -168,6 +151,14 @@ void yat_destroy_job(struct yat_job *job);
 void yat_job_add_dependency(struct yat_job *job, struct yat_job *predecessor);
 void yat_job_complete(struct yat_job *job);
 
+/* Linux 任务 <-> AJLR 作业 绑定接口 */
+struct yat_job *yat_create_job_for_task(struct task_struct *task, int job_priority,
+					u64 wcet, struct yat_dag_task *dag);
+void yat_complete_task_job(struct task_struct *task);
+
+/* 内核态自测入口（调试用） */
+void yat_create_test_dag(void);
+
 /* AJLR算法接口 */
 u64 yat_calculate_recency(int job_id, int cpu_id, u64 now);
 u64 yat_calculate_impact(struct yat_job *job, int core);
@@ -179,14 +170,6 @@ u64 yat_get_max_last_exec_time(int job_id, int *cpu_list, int cpu_count);
 u64 yat_sum_exec_time_multi(int *cpu_list, int cpu_count, u64 start_ts, u64 end_ts);
 void yat_cleanup_old_records(int cpu, u64 cutoff_time);
 
-/* 全局优先队列接口 */
-int yat_global_pool_init(struct yat_global_task_pool *pool);
-void yat_global_pool_destroy(struct yat_global_task_pool *pool);
-int yat_global_pool_enqueue(struct yat_global_task_pool *pool, struct task_struct *task, int priority, u64 wcet);
-struct task_struct *yat_global_pool_dequeue(struct yat_global_task_pool *pool);
-struct task_struct *yat_global_pool_peek(struct yat_global_task_pool *pool);
-bool yat_global_pool_empty(struct yat_global_task_pool *pool);
-void yat_global_pool_remove(struct yat_global_task_pool *pool, struct task_struct *task);
 void enqueue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags);
 void dequeue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags);
 struct task_struct *pick_next_task_yat_casched(struct rq *rq);
