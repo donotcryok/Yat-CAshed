@@ -611,3 +611,22 @@ nr_jobs 0
 若要真正验证 AJLR，需要先把 `yat_ajlr_enqueue_task()` 改为入池、
 并把 `pick_next_task_yat_casched()` 改为从池中选 —— 这属于算法改动（方向 D），
 不属于 P2 质量工程范畴，故本轮不做，仅如实记录。
+
+#### 8.7.6 后续（A8）：这条负面结论已被部分推翻，但数据仍未更新
+
+上面「需要先把 `enqueue_task` 改为入池、再把 `pick_next_task` 改为从池中选」这条
+设想路径，最终**没有采用**——它会把隐式任务作业塞进全局就绪池，与本地队列形成
+双重决策，表现为反复迁移。实际采用的接线点是 `select_task_rq`：
+
+- `select_task_rq_yat_casched()` 在 `WF_TTWU` 下调用 `yat_find_best_core_for_job()`，
+  把结果写入 `job->assigned_cpu` 并**作为返回值交给内核**；迁移由通用路径完成；
+- `pick_next_task_yat_casched()` 变成两段式，优先选 `assigned_cpu == rq->cpu`
+  或未定的任务；
+- `yat_ajlr_enqueue_task()` 改为复用作业（`yat_get_or_create_job()`），
+  `.task_dead` 负责精确释放。
+
+**因此 §8.7.5 的代码解释（「没有入池、pick 读本地队列」）已不再准确**，
+但**结论仍然成立**：那一轮 `compare_cfs_vs_yat.sh` 的数据确实**不能**作为
+AJLR 有效性的证据，因为它是在改动前采集的。A8 之后尚未重跑，
+所以截至本文件更新时，**依然没有任何一组数据**能证明 AJLR 的效果。
+详见 [`ROADMAP.md`](ROADMAP.md) 的 A8 节与 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.2.1。

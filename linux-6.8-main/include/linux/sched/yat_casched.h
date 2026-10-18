@@ -106,6 +106,34 @@ struct yat_job {
     int job_priority;              /* 作业优先级 */
     enum yat_job_state state;      /* 作业状态 */
     int pending_predecessors;      /* 待完成的前驱作业数 */
+    /*
+     * AJLR 最近一次为该作业选定的目标核心（YAT_INVALID_CORE 表示尚未决策）。
+     *
+     * 这个字段是「决策」与「执行」之间的唯一交接点：
+     *   - 写入者：select_task_rq_yat_casched()（唤醒时落地）与
+     *             yat_schedule_ajlr()（全局复核时刷新）；
+     *   - 读取者：debugfs 与 trace，用于判断「实际运行的核」是否等于
+     *             算法选出的核（两者不等说明亲和性/迁移策略覆盖了决策）。
+     * 它不参与锁保护：单写多读的普通 int，读到陈旧值只影响观测，不影响
+     * 调度正确性。
+     */
+    int assigned_cpu;
+    /*
+     * 上一次为 assigned_cpu 做全量决策的时间（ktime_get_ns）。
+     *
+     * 决策本身是 O(nr_cpus^2)（yat_calculate_recency() 内部对每个 CPU
+     * 再扫一遍 online CPU 的历史表），而 select_task_rq() 在每次
+     * try_to_wake_up() 上都会调用。若不加节流，一次唤醒就要几千次
+     * 哈希桶遍历，抖动会直接淹没调度收益。
+     *
+     * 因此决策遵循「粘性 + 最小间隔」：
+     *   - 目标核仍空闲（nr_running == 0）→ 直接复用，不重算；
+     *   - 距上次决策不足 YAT_DECISION_MIN_INTERVAL_NS → 复用；
+     *   - 否则才重新跑 yat_find_best_core_for_job()。
+     * 与 assigned_cpu 一样，普通字段，无锁保护，读到陈旧值只影响
+     * 「这次要不要重算」的判断，不影响正确性。
+     */
+    u64 last_decision_ns;
     u64 wcet;                      /* 最坏情况执行时间 */
     /*
      * 原 per_cpu_last_ts[NR_CPUS] 已删除：它是纯写字段（三处写入、零处读取），

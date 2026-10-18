@@ -119,6 +119,50 @@ TRACE_EVENT(yat_casched_place,
 );
 
 /*
+ * 唤醒选核：select_task_rq() 里真正落地 AJLR 决策的地方。
+ *
+ * 与 yat_casched_place 的区别：
+ *   - yat_casched_place 由 yat_find_best_core_for_job() 在「评估候选核心」
+ *     时发出，属于算法内部视角，可能被调用多次（每次全局复核都会重扫）；
+ *   - 本事件只在 select_task_rq() 真正把返回值交给内核时发出一次，
+ *     是「决策被采纳」的唯一凭据。prev_cpu 是任务睡眠前所在核，
+ *     target_cpu 是本次选出的核 —— 两者不等才意味着真实迁移。
+ *
+ * @pid:        被唤醒的任务
+ * @job_id:     其作业 ID
+ * @prev_cpu:   唤醒前的 CPU（内核传入的 task_cpu）
+ * @target_cpu: AJLR 选出的目标 CPU
+ * @prio:       作业优先级快照
+ */
+TRACE_EVENT(yat_casched_wakeup_place,
+
+	TP_PROTO(int pid, int job_id, int prev_cpu, int target_cpu, int prio),
+
+	TP_ARGS(pid, job_id, prev_cpu, target_cpu, prio),
+
+	TP_STRUCT__entry(
+		__field(int, pid)
+		__field(int, job_id)
+		__field(int, prev_cpu)
+		__field(int, target_cpu)
+		__field(int, prio)
+	),
+
+	TP_fast_assign(
+		__entry->pid		= pid;
+		__entry->job_id		= job_id;
+		__entry->prev_cpu	= prev_cpu;
+		__entry->target_cpu	= target_cpu;
+		__entry->prio		= prio;
+	),
+
+	TP_printk("pid=%d job_id=%d prev_cpu=%d target_cpu=%d prio=%d%s",
+		  __entry->pid, __entry->job_id, __entry->prev_cpu,
+		  __entry->target_cpu, __entry->prio,
+		  __entry->prev_cpu == __entry->target_cpu ? " (stay)" : " (migrate)")
+);
+
+/*
  * pick_next_task 选中某个任务。
  * @cpu:        运行队列所在 CPU
  * @pid:        被选中的任务

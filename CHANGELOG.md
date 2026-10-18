@@ -3,6 +3,98 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — 内核：AJLR 决策真正落地（select_task_rq）
+
+本轮修掉的是 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.1 里长期登记的
+「**AJLR 就绪池未接入主调度路径**」——即 `jobs_placed` / `history_records` /
+`accel_inserts` 恒为 0、AJLR 决策只落在 debugfs 数字上而从不出现在真实调度结果里。
+**这不是补功能，是接线**：算法本身（CRP 收益、加速表、就绪池）一行未改，
+改的是「决策算出来之后有没有人听」。
+
+### 新增（Added）
+
+- **`select_task_rq_yat_casched()` 真正选核**：接入 `WF_TTWU`（`try_to_wake_up`）路径，
+  把 `yat_find_best_core_for_job()` 的结果写到 `job->assigned_cpu` 并**作为返回值返回**。
+  这是内核**唯一**允许跨核迁移的合法钩子：`core.c` 的 `select_task_rq` 包装层在
+  `p->pi_lock` 下先调用本回调，再统一做 `is_cpu_allowed()` 校验 →
+  `set_cpu_allowed` 失败则 `select_fallback_rq()` 兜底 → `set_task_cpu()` →
+  `activate_task()`。因此本函数**可以返回任意 CPU**，亲和性由通用路径保证，
+  不需要也无法在这里自己拿目标 rq 的锁（`balance()` 里做跨核迁移会违反 A5 锁序）。
+- **`struct yat_job.assigned_cpu` 成为真实控制信号**（此前只是事后记录的遥测字段）。
+- **`struct yat_job.last_decision_ns` + `YAT_DECISION_MIN_INTERVAL_NS`（1 ms）决策节流**：
+  `yat_find_best_core_for_job()` → `yat_calculate_recency()` 是 O(nr_cpus²)
+  （每个候选核都 `for_each_online_cpu` 走一遍哈希桶），而 `select_task_rq` 每次唤醒
+  都会被调用。因此采用「**粘性 + 最小间隔**」：目标核 `nr_running == 0` 时直接留在原核
+  （唤醒即跑，重算只会更差），否则最密 1 ms 才重算一次。无锁保护——`assigned_cpu`
+  与 `last_decision_ns` 都只在持 `p->pi_lock` 的同一路径上写，读端用 `READ_ONCE`。
+- **`yat_get_or_create_job()`**：统一「从 task_struct 取作业，没有就按默认 DAG 建一个」
+  这一模式，`enqueue_task` / `select_task_rq` / `prio_changed` 共用，WCET 统一为
+  `YAT_DEFAULT_WCET_NS`。
+- **`.task_dead` 回调（`task_dead_yat_casched`）**：任务退出时释放其 `yat_job`。
+  `task_dead` 在 `finish_task_switch()` 里、`finish_lock_switch()` 之后调用，
+  此时 `task_struct` 仍有效且**不持 rq 锁**，因此可以安全 `kfree`；
+  `schedule()` 的原子上下文不允许睡眠，但本路径不需要睡眠。
+- **`pick_next_task_yat_casched()` 两段式选择**：优先在「`assigned_cpu` 等于本核
+  或未定」的任务里按 `job_priority` 选；若一个都没有，则退回纯优先级扫描。
+  扫描上限 `YAT_PICK_SCAN_LIMIT = 8`（短队列选择器，不做全链表遍历）。
+  这样 `assigned_cpu` 才在**出队侧**也生效，不再只是「选核建议」。
+- **新 tracepoint `yat_casched:yat_casched_wakeup_place`**
+  （`pid job_id prev_cpu target_cpu prio` + `(stay)` / `(migrate)` 后缀）。
+  与既有 `yat_casched_place` 的区别：后者是**算法内部**的评估结果，
+  前者是**内核实际采纳**的决策；两者不等即说明决策被亲和性/回落逻辑推翻。
+- **新 debugfs 节点 `/sys/kernel/debug/yat_casched/placements`**：
+  下表 `job_id pid prio assigned actual verdict`，`verdict ∈ {ok, pending, denied}`，
+  末行汇总 `ok / denied / pending` 计数。这是**唯一**能直接度量
+  「AJLR 到底管住了多少任务的放置」的接口——`jobs_placed` 只统计「算过」，
+  不统计「算完有没有被采纳」。
+
+### 变更（Changed）
+
+- `prio_changed_yat_casched()` 同步 `job->job_priority`（此前只在入队时写一次，
+  `sched_setscheduler()` 改优先级后选核用的还是旧值）。
+- `yat_schedule_ajlr()` 记录 `job->assigned_cpu = best_core`，并修正一处**永假分支**：
+  原判据 `best_core == raw_smp_processor_id()` 恒成立（上一次赋值就是它），
+  现改为判断「该作业的任务当前就在本核」，才触发 `resched_curr()`。
+- `yat_update_ready_pool()` 跳过隐式任务作业（`job->dag == yat_get_default_dag()`）：
+  这类作业由 `enqueue_task` 隐式创建、生命周期跟 `task_struct` 绑定，
+  若也走就绪池扫描会导致同一作业被「本地队列」与「全局池」重复决策，
+  表现为反复迁移的抖动。显式 DAG（`yat_create_test_dag()` 路径）语义不变。
+
+### 修复（Fixed）
+
+- **唤醒路径的作业泄漏**：原 `yat_ajlr_enqueue_task()` 每次入队都会
+  `__yat_create_job()` 建新作业并覆盖 `p->yat_casched.job`，旧作业既不释放也不复用；
+  任务睡眠/唤醒若干轮后，`dag->total_jobs` 与实际任务数彻底脱钩。
+  现改为 `yat_get_or_create_job()` 复用，作业生命周期与任务一致，
+  并由 `.task_dead` 精确释放一次。
+- **`enqueue_task` 在 `GFP_ATOMIC` 下的每次分配**：同一处修复顺带消除了
+  每个唤醒周期一次原子上下文 `kmalloc`。
+
+### 验证（Verified）
+
+- `make kernel-obj`：exit 0，`CC kernel/sched/yat_casched.o` 无 error / warning。
+- `bash scripts/gen_kernel_patches.sh --upstream /tmp/uprev`：6 个补丁，264 K，
+  hunk 数 3 / 27 / 1 / 3 / 23 / 1；`patches/MANIFEST.sha256` 已刷新。
+- `make patch-selftest UPSTREAM=/tmp/uprev`：正向逐字节一致、反向回到上游一致 →
+  **SELFTEST PASS**。
+- `make verify-all`：仓库健康 5/5、docs-check 27 篇 / 328 链接 / 0 失效、
+  name-check 0 违规、symbol-check 通过、simulator-verify 通过 → **全部门禁通过**。
+- `scripts/check_names.py`：为本文件枚举错误拼法的三处（docstring 两行 +
+  `VARIANTS` 元组）补 `name-check:ignore` 行级豁免。这是脚本自身文档化的豁免通道，
+  **没有放宽门禁规则**——规则必须能逐字写出被禁写法，否则认不出它们。
+
+### 已知遗留（Known Issues）
+
+- **QEMU 实测尚未重跑**：本轮只做到编译 + 补丁 + 门禁。`/placements` 的
+  `ok/denied/pending` 比例、以及 `yat_casched_wakeup_place` 的 `(stay)/(migrate)`
+  分布，需要在 `make kernel-compare` 里实测后才能给出「AJLR 实际接管率」。
+  CHANGELOG 不预填未跑出的数字。
+- `select_task_rq` 只覆盖唤醒路径；`fork` / `exec` / 周期唤醒的迁移仍由
+  `load_balance` 决定（`WF_FORK` / `WF_EXEC` 直接返回 `task_cpu`，因为此时
+  历史表尚未建立，重算是纯噪声）。
+- 决策节流 1 ms 是**经验值**，不是推导值；真正的最优值要靠 D1' 的真实代价模型
+  与 trace 负载来定。
+
 ## [Unreleased] — P1 文档治理收尾 + P2 B3（模拟器参数外置 / CSV schema）
 
 本轮把 P1「文档治理」的最后三块（项目名统一、实现文档归档、LICENSE 授权澄清）

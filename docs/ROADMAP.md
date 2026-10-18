@@ -19,8 +19,8 @@
 | ~~**P0**~~ | ~~解决 `yat_casched.c` 合并冲突~~ | ✅ **已完成（A1）** | — |
 | **P1** | 文档与目录工程化（方向 C） | ✅ 门禁/CHANGELOG/CONTRIBUTING/CI 已完成 | 命名统一、两份「完整实现文档」归档、LICENSE 澄清 |
 | **P1** | 构建与 CI | ✅ **已完成（A2 / B1 / B2）** | — |
-| **P2** | 内核模块质量（A4–A7） | ⏳ 进行中 | A4 脆弱集成点、A5 并发与内存、A6 可观测性、A7 测试体系 |
-| **P2** | 模拟器工程化（B3–B4） | ✅ 主体完成 | B3 剩余：参数外置、CSV schema 文档 |
+| **P2** | 内核模块质量（A4–A8） | ✅ 主体完成 | A4–A7 已完成；A8（AJLR 决策落地）已接线，**实测待跑** |
+| **P2** | 模拟器工程化（B3–B4） | ✅ 已完成 | B3 参数外置与 CSV schema 文档已收口 |
 | **P3** | 算法与研究深化（D1'–D9'） | ⏳ 待启动 | **先修度量**：D1' 真实代价模型 → D2' trace 负载 → D8' 仿真↔内核一致性 |
 
 ---
@@ -157,20 +157,28 @@
 
 **已落地内容**（`linux-6.8-main/kernel/sched/yat_casched.c`）：
 
-1. **5 个 tracepoint**（定义在 `include/trace/events/yat_casched.h`，已接入 `include/trace/events/Makefile`）：
+1. **6 个 tracepoint**（定义在 `include/trace/events/yat_casched.h`，已接入 `include/trace/events/Makefile`）：
    - `yat_casched_enqueue` / `yat_casched_dequeue`：进出调度类的任务与优先级；
    - `yat_casched_pick`：选中了哪个任务、它的 `job_id`、当前 `nr_running`；
-   - `yat_casched_place`：AJLR 把作业放到了哪个核心、依据什么；
+   - `yat_casched_place`：**算法内部**评估出把作业放到哪个核心、依据什么；
+   - `yat_casched_wakeup_place`：**内核实际采纳**的选核结果
+     （`pid job_id prev_cpu target_cpu prio` + `(stay)` / `(migrate)`）；
    - `yat_casched_account`：记账事件（执行时间统计）。
    用 tracepoint 而非 `printk` 的关键原因：**零成本关闭**（未启用时只是静态分支），
    不会像 `printk` 那样扰动调度时序。
 
-2. **3 个 debugfs 节点**（`/sys/kernel/debug/yat_casched/`）：
+   > `_place` 与 `_wakeup_place` 必须成对看：两者不一致说明决策被亲和性校验
+   > 或 `select_fallback_rq()` 推翻。只看 `_place` 会高估 AJLR 的实际影响力。
+
+2. **4 个 debugfs 节点**（`/sys/kernel/debug/yat_casched/`）：
    - `stats`：7 项 per-CPU 计数器求和 —— `balance_runs` / `balance_skips` /
      `jobs_placed` / `jobs_nocore` / `history_records` / `accel_inserts` / `accel_dup`，
      外加 `nr_cpu_ids` 便于确认 SMP 是否真的生效；
    - `ready_pool`：就绪池快照（作业 ID、任务 PID、优先级、DAG 优先级、WCET、状态）；
-   - `dags`：DAG 列表与每个 DAG 内作业的 waiting / ready / running 分布。
+   - `dags`：DAG 列表与每个 DAG 内作业的 waiting / ready / running 分布；
+   - `placements`：`job_id pid prio assigned actual verdict` + `ok/denied/pending` 汇总。
+     `jobs_placed` 只回答「算过几次」，`placements` 才回答「算完有没有被采纳」——
+     AJLR 的真实接管率只能看后者。
 
    注册方式：`late_initcall(yat_debugfs_init)` —— debugfs 本身是 `core_initcall`，
    在 `sched_init()` 时还不存在，所以只能在 `late_initcall` 阶段挂节点。
@@ -220,15 +228,19 @@ yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
 墙钟时间比 `yat/cfs ≈ 0.268`，非自愿上下文切换 `55 → 7`。
 `sum_work_units` 两轮均为 8000000（= 4 × 2000000），确认负载真的跑完。
 
-**必须带上的限定（诚实披露）**：同一轮 debugfs 显示
+**必须带上的限定（诚实披露）**：那轮实测的 debugfs 显示
 `jobs_placed=0`、`history_records=0`、`accel_inserts=0`，而 `balance_runs` 非零。
-原因是 `yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`，
-**并不插入 `global_ready_pool`**；`pick_next_task_yat_casched()` 是从
-`rq->yat_casched.tasks` 链表里选任务的。AJLR 就绪池目前只被
-`yat_create_test_dag()` 这条演示路径使用。
+当时的原因是 `yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`、
+**并不插入 `global_ready_pool`**，AJLR 就绪池只被 `yat_create_test_dag()` 演示路径使用。
 因此上述时间差**来源于「调度类切换」本身**（短队列选择器 vs CFS 红黑树 + vruntime），
-**不是 AJLR 作业分配算法的效果**。引用该数据时必须同时说明这一点；
-脚本也会在 `jobs_placed == 0` 时自动打印该提示。
+**不是 AJLR 作业分配算法的效果**。
+
+⚠️ **该限定对历史数据继续有效，但对之后的实测不再成立**：A8 已把
+`select_task_rq` 接成真正的选核路径（见 A8），此后 `jobs_placed` / `history_records` /
+`accel_inserts` 应当非零。**但 A8 之后尚未重跑 `kernel-compare`**，
+所以目前**没有任何一组数据**可以声称体现了 AJLR 效果——
+在那组数据跑出来之前，本文与新 CHANGELOG 都不填数字。
+脚本的 `jobs_placed == 0` 提示保留：它是回归守卫，不是过时逻辑。
 
 **两个实测踩到的引导坑**（已写入脚本注释与文档）：
 1. `-kernel` 不能指向 ELF `vmlinux`（`Error loading uncompressed kernel without PVH ELF Note`），
@@ -236,6 +248,36 @@ yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
 2. 不能加 `acpi=off` / `noapic` / `nolapic` —— `-kernel bzImage` 绕过 BIOS，
    AP 只能靠 ACPI MADT 枚举，关掉后 guest 退化为 `nr_cpu_ids:1`，对比失去意义；
    保留 ACPI 后 `poweroff -f` 也能真正让 QEMU 退出。
+
+### A8. AJLR 决策落地（P2 续）✅ 已接线（实测待跑）
+
+**问题**：A6/A7 的所有观测数据都指向同一个尴尬事实——AJLR 算出了放置，
+但主调度路径没人采纳它（`jobs_placed` 恒 0）。这属于 [`ARCHITECTURE.md`](ARCHITECTURE.md)
+§5.1 登记的 P13。
+
+**本轮改动**（算法本身零改动，只做接线）：
+
+| 环节 | 改动 | 关键理由 |
+|------|------|----------|
+| 选核 | `select_task_rq_yat_casched()` 接入 `WF_TTWU`，把 `yat_find_best_core_for_job()` 的结果写进 `assigned_cpu` 并**返回给内核** | 这是内核**唯一**合法的跨核选核钩子：包装层在 `p->pi_lock` 下调用它，之后统一 `is_cpu_allowed()` → `set_task_cpu()` → `activate_task()`。因此返回任意 CPU 都安全，亲和性由通用路径兜底 |
+| 不在 `balance()` 里做 | 保持原状 | `balance()` 持本核 `rq_lock`，跨核迁移需目标核 `rq_lock`，构成 `rq_lock(A)→rq_lock(B)` 嵌套，违反 A5 锁序 |
+| 成本控制 | 目标核 `nr_running == 0` 直接沿用；否则 `YAT_DECISION_MIN_INTERVAL_NS = 1 ms` 内不重算 | `yat_calculate_recency()` 是 O(nr_cpus²)（每个候选核都遍历一遍在线 CPU 的哈希桶），而唤醒是高频事件。不节流会直接把唤醒延迟变成主要开销 |
+| 出队 | `pick_next_task_yat_casched()` 两段式：优先选 `assigned_cpu == rq->cpu \|\| INVALID` 的任务，没有才退回纯优先级 | 让 `assigned_cpu` 在**出队侧**也生效，否则「选核建议」会被本地队列的选择器完全抹平 |
+| 生命周期 | `.task_dead = task_dead_yat_casched`；`enqueue_task` 改为 `yat_get_or_create_job()` | 原实现每次入队都新建 job 并覆盖指针，旧 job 永不释放（P14）。`task_dead` 在 `finish_task_switch()` 的 `finish_lock_switch()` 之后调用，不持 rq 锁，可安全 `kfree` |
+| 可观测量 | 新 tracepoint `_wakeup_place` + 新 debugfs 节点 `placements` | `_place` 是「算法想放哪」，`_wakeup_place` 是「内核实际放哪」。只有后者能算接管率 |
+
+**验收（分两档，后者尚未完成）**：
+- ✅ 编译 / 补丁 / 门禁：`make kernel-obj`、`make patch-selftest`、`make verify-all` 全绿。
+- ⏳ **实跑**：`make kernel-compare` 后 `/placements` 的 `ok/denied/pending` 分布、
+  `_wakeup_place` 的 `(stay)/(migrate)` 比例，以及 `jobs_placed > 0`。
+  在这些数字跑出来之前，**不得声称任何性能收益来自 AJLR**。
+
+**已知边界**：
+- 只覆盖唤醒路径；`fork` / `exec` 直接返回 `task_cpu`（此刻历史表全零，重算是噪声）。
+- 1 ms 节流是经验值，需 D1' 的真实代价模型来标定。
+- 就绪池（`global_ready_pool`）仍只服务显式 DAG 路径，**这是有意的分工**：
+  隐式任务作业若同时被本地队列与全局池决策，会表现为反复迁移的抖动，
+  因此 `yat_update_ready_pool()` 显式跳过 `job->dag == yat_get_default_dag()`。
 
 ---
 

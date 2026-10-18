@@ -6,8 +6,8 @@
 --------
 仓库里历史上出现过 6 种项目名写法：
 
-    Yat-CAShed    Yat_CAShed    Yat_Casched
-    Yat-CASCHED   Yat_CAshed    yat_CAShed
+    Yat-CAShed    Yat_CAShed    Yat_Casched      name-check:ignore
+    Yat-CASCHED   Yat_CAshed    yat_CAShed       name-check:ignore
 
 散文层混用不会让程序出错，所以一直没人修；但它会让人分不清
 "这是同一个项目还是两个"，也让搜索失效（搜 `Yat-CAShed` 漏掉一半）。
@@ -23,8 +23,8 @@
   * 仓库根目录名       Yat-CAShed/
 
 这三种外部引用（URL / 已发布的论文标题 / 目录名）一旦改动就断链或失真，
-因此它们决定了规范名的唯一合理取值。`Yat-Casched` 只出现在本仓库自己写的
-约定文字里，没有外部绑定，属于"可以改"的一方。
+因此它们决定了规范名的唯一合理取值。`Yat-Casched` 只出现在本仓库自己写的  name-check:ignore
+约定文字里，没有外部绑定，属于"可以改"的一方。  name-check:ignore
 
 哪些地方**不**检查
 ------------------
@@ -65,15 +65,20 @@ from pathlib import Path
 # 规范名
 CANONICAL = "Yat-CAShed"
 
-# 需要规整的写法（规范名本身不在其中）
-VARIANTS = (
-    "Yat_CAShed",
-    "Yat_Casched",
-    "Yat-CASCHED",
-    "Yat_CAshed",
-    "yat_CAShed",
-    "Yat-Casched",
-    "YAT_CASHED",
+# 需要规整的写法（规范名本身不在其中）。
+#
+# 本元组必须逐字写出每一种错误拼法，否则检查器认不出它们 —— 这些
+# 字面量本身就是「规则的定义」，不是需要被规整的散文。因此整块加
+# 行级豁免标记：这是 `LINE_ALLOW_SUBSTRINGS` 里 `name-check:ignore`
+# 被设计出来的场景（与 CONTRIBUTING.md §6 的命名规则表同理）。
+VARIANTS = (  # name-check:ignore
+    "Yat_CAShed",       # name-check:ignore
+    "Yat_Casched",      # name-check:ignore
+    "Yat-CASCHED",      # name-check:ignore
+    "Yat_CAshed",       # name-check:ignore
+    "yat_CAShed",       # name-check:ignore
+    "Yat-Casched",      # name-check:ignore
+    "YAT_CASHED",       # name-check:ignore
 )
 
 VARIANT_RE = re.compile("|".join(re.escape(v) for v in VARIANTS))

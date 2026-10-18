@@ -4,7 +4,7 @@ Upstream: linux v6.8 (torvalds)
 
 --- /dev/null
 +++ b/include/linux/sched/yat_casched.h
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,249 @@
 +#ifndef _LINUX_SCHED_YAT_CASCHED_H
 +#define _LINUX_SCHED_YAT_CASCHED_H
 +
@@ -113,6 +113,34 @@ Upstream: linux v6.8 (torvalds)
 +    int job_priority;              /* 作业优先级 */
 +    enum yat_job_state state;      /* 作业状态 */
 +    int pending_predecessors;      /* 待完成的前驱作业数 */
++    /*
++     * AJLR 最近一次为该作业选定的目标核心（YAT_INVALID_CORE 表示尚未决策）。
++     *
++     * 这个字段是「决策」与「执行」之间的唯一交接点：
++     *   - 写入者：select_task_rq_yat_casched()（唤醒时落地）与
++     *             yat_schedule_ajlr()（全局复核时刷新）；
++     *   - 读取者：debugfs 与 trace，用于判断「实际运行的核」是否等于
++     *             算法选出的核（两者不等说明亲和性/迁移策略覆盖了决策）。
++     * 它不参与锁保护：单写多读的普通 int，读到陈旧值只影响观测，不影响
++     * 调度正确性。
++     */
++    int assigned_cpu;
++    /*
++     * 上一次为 assigned_cpu 做全量决策的时间（ktime_get_ns）。
++     *
++     * 决策本身是 O(nr_cpus^2)（yat_calculate_recency() 内部对每个 CPU
++     * 再扫一遍 online CPU 的历史表），而 select_task_rq() 在每次
++     * try_to_wake_up() 上都会调用。若不加节流，一次唤醒就要几千次
++     * 哈希桶遍历，抖动会直接淹没调度收益。
++     *
++     * 因此决策遵循「粘性 + 最小间隔」：
++     *   - 目标核仍空闲（nr_running == 0）→ 直接复用，不重算；
++     *   - 距上次决策不足 YAT_DECISION_MIN_INTERVAL_NS → 复用；
++     *   - 否则才重新跑 yat_find_best_core_for_job()。
++     * 与 assigned_cpu 一样，普通字段，无锁保护，读到陈旧值只影响
++     * 「这次要不要重算」的判断，不影响正确性。
++     */
++    u64 last_decision_ns;
 +    u64 wcet;                      /* 最坏情况执行时间 */
 +    /*
 +     * 原 per_cpu_last_ts[NR_CPUS] 已删除：它是纯写字段（三处写入、零处读取），
@@ -228,7 +256,7 @@ Upstream: linux v6.8 (torvalds)
 +#endif /* _LINUX_SCHED_YAT_CASCHED_H */
 --- /dev/null
 +++ b/include/trace/events/yat_casched.h
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,228 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#undef TRACE_SYSTEM
 +#define TRACE_SYSTEM yat_casched
@@ -350,6 +378,50 @@ Upstream: linux v6.8 (torvalds)
 +);
 +
 +/*
++ * 唤醒选核：select_task_rq() 里真正落地 AJLR 决策的地方。
++ *
++ * 与 yat_casched_place 的区别：
++ *   - yat_casched_place 由 yat_find_best_core_for_job() 在「评估候选核心」
++ *     时发出，属于算法内部视角，可能被调用多次（每次全局复核都会重扫）；
++ *   - 本事件只在 select_task_rq() 真正把返回值交给内核时发出一次，
++ *     是「决策被采纳」的唯一凭据。prev_cpu 是任务睡眠前所在核，
++ *     target_cpu 是本次选出的核 —— 两者不等才意味着真实迁移。
++ *
++ * @pid:        被唤醒的任务
++ * @job_id:     其作业 ID
++ * @prev_cpu:   唤醒前的 CPU（内核传入的 task_cpu）
++ * @target_cpu: AJLR 选出的目标 CPU
++ * @prio:       作业优先级快照
++ */
++TRACE_EVENT(yat_casched_wakeup_place,
++
++	TP_PROTO(int pid, int job_id, int prev_cpu, int target_cpu, int prio),
++
++	TP_ARGS(pid, job_id, prev_cpu, target_cpu, prio),
++
++	TP_STRUCT__entry(
++		__field(int, pid)
++		__field(int, job_id)
++		__field(int, prev_cpu)
++		__field(int, target_cpu)
++		__field(int, prio)
++	),
++
++	TP_fast_assign(
++		__entry->pid		= pid;
++		__entry->job_id		= job_id;
++		__entry->prev_cpu	= prev_cpu;
++		__entry->target_cpu	= target_cpu;
++		__entry->prio		= prio;
++	),
++
++	TP_printk("pid=%d job_id=%d prev_cpu=%d target_cpu=%d prio=%d%s",
++		  __entry->pid, __entry->job_id, __entry->prev_cpu,
++		  __entry->target_cpu, __entry->prio,
++		  __entry->prev_cpu == __entry->target_cpu ? " (stay)" : " (migrate)")
++);
++
++/*
 + * pick_next_task 选中某个任务。
 + * @cpu:        运行队列所在 CPU
 + * @pid:        被选中的任务
@@ -415,7 +487,7 @@ Upstream: linux v6.8 (torvalds)
 +#include <trace/define_trace.h>
 --- /dev/null
 +++ b/kernel/sched/yat_casched.c
-@@ -0,0 +1,2144 @@
+@@ -0,0 +1,2489 @@
 +/*
 + * Yat-CAShed - AJLR层级化DAG调度器 (Decision Final Version)
 + *
@@ -465,6 +537,30 @@ Upstream: linux v6.8 (torvalds)
 +#define YAT_CACHE_HOT_TIME	(HZ / 100)	/* 10ms */
 +#define YAT_MIN_GRANULARITY	(NSEC_PER_SEC / 1000)	/* 1ms - 更短的时间片 */
 +#define YAT_TIME_SLICE		(4 * NSEC_PER_MSEC)	/* 4ms 默认时间片 */
++
++/*
++ * 普通任务的默认 WCET。
++ *
++ * 用户态没有提供 WCET 的接口（SCHED_YAT_CASCHED 的 sched_priority 只有
++ * 0..19），所以绑定到 task_struct 的隐式作业统一用 1ms：
++ *   - 这是 yat_find_best_core_for_job() 里 benefit = (1000-crp)*wcet/1000
++ *     的乘数，同一个值对**所有**任务都成立时，排序完全由 crp 决定 ——
++ *     正是 AJLR 想要的「缓存热度优先」语义，不会被 WCET 差异干扰；
++ *   - 若将来需要区分 WCET，应通过 sched_attr 扩展或 debugfs 注入，
++ *     而不是在这里按 pid 猜。
++ */
++#define YAT_DEFAULT_WCET_NS	1000000ULL	/* 1ms */
++
++/*
++ * 两个连续的「全量选核」之间至少间隔这么久。
++ *
++ * 取值理由：yat_find_best_core_for_job() 的收益来自「任务换核后仍能命中
++ * 上次留在该核缓存里的数据」。缓存的半衰期是数十微秒到毫秒量级，
++ * 而重新决策的成本是 O(nr_cpus^2) 次历史表桶遍历。1ms 既远小于缓存
++ * 完全失效的时间，又能把每任务每秒的决策次数压到 1000 次以内。
++ * 在 64 核上这相当于把选核开销从「每次唤醒几万次桶访问」降到可忽略。
++ */
++#define YAT_DECISION_MIN_INTERVAL_NS	1000000ULL	/* 1ms */
 +
 +/* 每个 CPU 历史表的软上限，超过后触发一次惰性裁剪，防止无限增长 */
 +#define YAT_HISTORY_MAX_RECORDS	512
@@ -737,6 +833,80 @@ Upstream: linux v6.8 (torvalds)
 +};
 +
 +/*
++ * debugfs: /sys/kernel/debug/yat_casched/placements
++ *
++ * 「决策 vs 实际」对照表 —— assigned_cpu 这个字段存在的意义就在这里。
++ *
++ *   assigned : AJLR 认为该作业应该在哪颗核上运行（YAT_INVALID_CORE 表示
++ *              尚未决策，通常是刚从 fork 出来、还没经历过一次唤醒）；
++ *   actual   : 该作业当前实际被绑定的核（task_cpu()）；
++ *   verdict  : ok      两者一致
++ *              pending 尚未决策
++ *              denied  不一致 —— 说明 is_cpu_allowed()/亲和性掩码否决了
++ *                      AJLR 的决策，或任务在决策后又被 migrate 走了
++ *
++ * denied 占比是衡量「算法决策真正生效程度」的唯一直接指标。若该比例
++ * 长期偏高，说明瓶颈不在 AJLR 本身，而在 cpuset/亲和性配置。
++ *
++ * 一致性说明：遍历期间持有 global_dag_lock 与 dag->lock，
++ * 而 yat_destroy_job() 也要先取 dag->lock 才会摘链并 kfree，
++ * 因此只要作业还挂在 dag->jobs 上，其内存就是有效的。
++ */
++static int yat_placements_show(struct seq_file *m, void *v)
++{
++	struct yat_dag_task *dag;
++	struct yat_job *job;
++	unsigned long flags;
++	int ok = 0, pending = 0, denied = 0;
++
++	seq_puts(m, "job_id\tpid\tprio\tassigned\tactual\tverdict\n");
++
++	spin_lock_irqsave(&global_dag_lock, flags);
++	list_for_each_entry(dag, &global_dag_list, dag_list) {
++		spin_lock_nested(&dag->lock, 1);
++		list_for_each_entry(job, &dag->jobs, job_list) {
++			int assigned = READ_ONCE(job->assigned_cpu);
++			int actual = job->task ? task_cpu(job->task) : -1;
++			const char *verdict;
++
++			if (assigned == YAT_INVALID_CORE) {
++				verdict = "pending";
++				pending++;
++			} else if (assigned == actual) {
++				verdict = "ok";
++				ok++;
++			} else {
++				verdict = "denied";
++				denied++;
++			}
++
++			seq_printf(m, "%d\t%d\t%d\t%d\t%d\t%s\n",
++				   job->job_id,
++				   job->task ? job->task->pid : -1,
++				   job->job_priority, assigned, actual, verdict);
++		}
++		spin_unlock(&dag->lock);
++	}
++	spin_unlock_irqrestore(&global_dag_lock, flags);
++
++	seq_printf(m, "\nsummary: ok=%d denied=%d pending=%d\n",
++		   ok, denied, pending);
++	return 0;
++}
++
++static int yat_placements_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, yat_placements_show, NULL);
++}
++
++static const struct file_operations yat_placements_fops = {
++	.open		= yat_placements_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
++/*
 + * 创建 debugfs 节点。失败不影响调度功能，只是少了一个观测入口。
 + *
 + * 返回 int 而不是 void：initcall_t 的类型是 int (*)(void)，用
@@ -756,6 +926,8 @@ Upstream: linux v6.8 (torvalds)
 +			    &yat_ready_pool_fops);
 +	debugfs_create_file("dags", 0444, yat_debugfs_root, NULL,
 +			    &yat_dags_fops);
++	debugfs_create_file("placements", 0444, yat_debugfs_root, NULL,
++			    &yat_placements_fops);
 +
 +	return 0;
 +}
@@ -779,6 +951,12 @@ Upstream: linux v6.8 (torvalds)
 +/* 前置声明 */
 +static void yat_ajlr_enqueue_task(struct rq *rq, struct task_struct *p, int flags);
 +static void yat_ajlr_dequeue_task(struct rq *rq, struct task_struct *p, int flags);
++/*
++ * yat_get_default_dag() 定义在文件末尾（与 yat_ajlr_enqueue_task 相邻，
++ * 便于读者对照"默认 DAG 从哪来"）。而 select_task_rq() 的选核路径在
++ * 文件中部就要用到它，因此这里补一个前置声明。
++ */
++static struct yat_dag_task *yat_get_default_dag(void);
 +struct yat_job *yat_create_job_for_task(struct task_struct *task, int job_priority, u64 wcet, struct yat_dag_task *dag);
 +void yat_complete_task_job(struct task_struct *task);
 +void yat_create_test_dag(void);
@@ -1047,6 +1225,8 @@ Upstream: linux v6.8 (torvalds)
 +    job->task = NULL;
 +    job->state = YAT_JOB_WAITING;
 +    job->pending_predecessors = 0;
++    job->assigned_cpu = YAT_INVALID_CORE;
++    job->last_decision_ns = 0;
 +    
 +    INIT_LIST_HEAD(&job->job_list);
 +    INIT_LIST_HEAD(&job->ready_list);
@@ -1771,14 +1951,142 @@ Upstream: linux v6.8 (torvalds)
 +}
 +
 +/*
-+ * select_task_rq - 职责减弱
-+ * 在我们的新模型中，决策由全局调度器做出。
-+ * 这个函数只在特殊情况下被调用，或者可以简单返回一个默认值。
++ * 为任务取得（必要时创建）关联作业。
++ *
++ * 上下文：调用者可能处于
++ *   - select_task_rq()：持 p->pi_lock、中断关闭（try_to_wake_up 用
++ *     raw_spin_lock_irqsave 取 pi_lock）；
++ *   - enqueue_task()：持 rq_lock、可能关中断。
++ * 两者都**不允许睡眠**，所以分配只能用 GFP_ATOMIC，失败就返回 NULL，
++ * 调用方退化为「不参与 AJLR 决策、按原 CPU 运行」——
++ * 这是可接受的降级，不影响调度正确性。
++ *
++ * 为什么要在这里创建而不是只在 enqueue_task 里创建：
++ *   ttwu 路径的顺序是 select_task_rq() → set_task_cpu() → activate_task()
++ *   → enqueue_task()。如果等到 enqueue_task 才有 job，那么选核阶段就
++ *   拿不到 job，AJLR 的决策永远没有落地的机会。
++ */
++static struct yat_job *yat_get_or_create_job(struct task_struct *p)
++{
++    struct yat_job *job = p->yat_casched.job;
++    struct yat_dag_task *default_dag;
++    int user_priority;
++
++    if (job)
++        return job;
++
++    default_dag = yat_get_default_dag();
++    if (!default_dag)
++        return NULL;
++
++    /*
++     * rt_priority 对 SCHED_YAT_CASCHED 任务由 sched_setscheduler() 按
++     * sched_priority 写入（见 core.c 的 __setscheduler_params），
++     * 未设置时为 0 == 中等优先级。
++     */
++    user_priority = p->rt_priority;
++
++    job = __yat_create_job(p->pid, user_priority, YAT_DEFAULT_WCET_NS,
++                           default_dag, GFP_ATOMIC);
++    if (!job)
++        return NULL;
++
++    job->task = p;
++    WRITE_ONCE(p->yat_casched.job, job);
++
++    return job;
++}
++
++/*
++ * select_task_rq - AJLR 决策的实际落地点。
++ *
++ * 为什么必须在这里做，而不是在 balance() 里做：
++ *
++ *   核心调度器调用本函数时（try_to_wake_up），持有 p->pi_lock 且中断
++ *   关闭，并且**在本函数返回之后**会自己完成
++ *     is_cpu_allowed() 校验 → set_task_cpu() → activate_task()
++ *   三步。也就是说，「把任务放到哪颗核」这个动作由通用层免费提供，
++ *   本函数唯一要做的就是**返回一个合法的 CPU 编号**。
++ *
++ *   相比之下在 balance_yat_casched() 里选核已经太晚：彼时任务已经
++ *   在某个 rq 上，要改核就必须拿目标 rq 的 rq_lock 做跨核迁移，
++ *   这既违反 A5 的加锁规则（不能在自己的 rq_lock 里阻塞等待别的
++ *   rq_lock），也容易与热插拔/亲和性设置竞争。
++ *
++ * 只在 WF_TTWU（唤醒）路径上决策：
++ *   - WF_FORK/WF_EXEC 时任务还没有任何执行历史，recency 全为 0，
++ *     AJLR 的 benefit 排序退化为「所有核并列」，做决策只是浪费一次
++ *     O(nr_cpus) 的历史表扫描；
++ *   - 保持 fork/exec 的原有行为，减少不必要的迁移。
++ *
++ * 返回值：若算出的核心不在 p->cpus_ptr 内，核心调度器的
++ * is_cpu_allowed() 会兜底选择允许的核，所以这里无需自己校验亲和性。
 + */
 +int select_task_rq_yat_casched(struct task_struct *p, int task_cpu, int flags)
 +{
-+    // 决策已移至全局调度器，这里返回task_cpu以兼容框架
-+    return task_cpu;
++    struct yat_job *job;
++    u64 now, last;
++    int prev_core;
++    int best_core;
++
++    if (!(flags & WF_TTWU))
++        return task_cpu;
++
++    /*
++     * 新建的作业此时还没有任何历史记录，yat_calculate_recency() 全 0，
++     * benefit 处处相等，yat_find_best_core_for_job() 只会按 Impact
++     * （目标核当前负载）挑一个。这本身是有意义的放置（把新任务放到
++     * 最空闲的核），所以这里**不**跳过首次决策。
++     */
++    job = yat_get_or_create_job(p);
++    if (!job)
++        return task_cpu;
++
++    /* 每次唤醒都刷新优先级：sched_setscheduler() 可能改了 sched_priority */
++    WRITE_ONCE(job->job_priority, p->rt_priority);
++
++    prev_core = READ_ONCE(job->assigned_cpu);
++
++    /*
++     * 决策节流 —— 见 struct yat_job.last_decision_ns 的注释。
++     *
++     * 这一次唤醒的绝大多数情况都会走这里返回，代价只有两次
++     * READ_ONCE + 一次时间比较，不会把 O(nr_cpus^2) 的历史表扫描
++     * 拖进 try_to_wake_up() 的关键路径。
++     */
++    if (prev_core != YAT_INVALID_CORE && cpu_online(prev_core)) {
++        now = ktime_get_ns();
++
++        /* (a) 目标核当前空闲：上次的决策依然成立，直接复用 */
++        if (likely(!READ_ONCE(cpu_rq(prev_core)->yat_casched.nr_running)))
++            goto out;
++
++        /* (b) 距上次决策还不到最小间隔：保持粘性，避免抖动 */
++        last = READ_ONCE(job->last_decision_ns);
++        if (now - last < YAT_DECISION_MIN_INTERVAL_NS)
++            goto out;
++    } else {
++        now = ktime_get_ns();
++    }
++
++    best_core = yat_find_best_core_for_job(job);
++    if (best_core == YAT_INVALID_CORE)
++        return task_cpu;   /* 保留 task_cpu，通用层会做 is_cpu_allowed 兜底 */
++
++    /*
++     * 记录「算法认为该去哪」。这是决策与执行之间唯一的交接点：
++     * 若最终运行核与 assigned_cpu 不一致，说明通用层的亲和性/迁移
++     * 约束覆盖了算法决策，debugfs 与 trace 可据此统计被否决的比例。
++     */
++    WRITE_ONCE(job->assigned_cpu, best_core);
++    WRITE_ONCE(job->last_decision_ns, now);
++    prev_core = best_core;
++
++out:
++    trace_yat_casched_wakeup_place(p->pid, job->job_id, task_cpu,
++                                   prev_core, READ_ONCE(job->job_priority));
++
++    return prev_core;
 +}
 +
 +/*
@@ -1800,12 +2108,22 @@ Upstream: linux v6.8 (torvalds)
 +{
 +    struct yat_casched_rq *yat_rq = &rq->yat_casched;
 +
-+    /* 初始化任务的 Yat-CAShed 实体 */
++    /*
++     * 初始化任务的 Yat-CAShed 实体。
++     *
++     * **不要在这里把 p->yat_casched.job 置 NULL。**
++     * dequeue_task_yat_casched() 用 list_del_init() 退出 run_list，因此
++     * 每次「睡眠 → 唤醒」循环后 run_list 都是空的。若把它当作「首次
++     * 入队」的判据并顺手清空 job，那么每次唤醒都会新建一个 yat_job：
++     *   - 旧 job 仍挂在 dag->jobs 上，永不释放 —— 每次唤醒泄漏一个
++     *     struct yat_job，且 dag->total_jobs 无界增长（debugfs 可见）；
++     *   - 旧 job 上的历史/加速表条目与新 job_id 对不上，recency 统计断裂。
++     * 现在 job 的生命周期与任务绑定，只在 task_dead 时释放。
++     */
 +    if (list_empty(&p->yat_casched.run_list)) {
 +        INIT_LIST_HEAD(&p->yat_casched.run_list);
 +        p->yat_casched.vruntime = 0;
 +        p->yat_casched.last_cpu = -1;  /* 使用-1表示未初始化 */
-+        p->yat_casched.job = NULL;     /* 初始化作业指针 */
 +    }
 +
 +    /* 添加到运行队列（rq_lock 已由调用者持有） */
@@ -1843,40 +2161,75 @@ Upstream: linux v6.8 (torvalds)
 + *    yat_sum_exec_time_since() 的均值，让 CRP 比率失真；真正的记账点在
 + *    put_prev_task()（一次完整的 [开始, 结束] 区间）。
 + *  - 调度类回调运行在 rq_lock 之下，这里只做 O(n) 扫描，不分配内存。
-+ *  - 只扫前 3 个候选是有意为之：yat_rq->tasks 已按入队顺序排列，
++ *  - 只扫前 YAT_PICK_SCAN_LIMIT 个候选：yat_rq->tasks 已按入队顺序排列，
 + *    头部是最活跃的任务，扫全部会让 pick 变成 O(队列长度)。
++ *
++ * 选择规则（两段式）：
++ *   1. 优先选「AJLR 认为就该在本核运行」的任务，即
++ *      assigned_cpu == rq->cpu，或尚未决策（YAT_INVALID_CORE）；
++ *   2. 同等条件下按 job_priority 取最小（数值小 == 优先级高，与
++ *      sched_priority 语义一致）。
++ *   若扫描窗口内没有符合 1 的任务，则退化为「纯按优先级选」，
++ *   保证本核不会因为决策偏好而空转。
++ *
++ * 为什么需要第 1 条：select_task_rq_yat_casched() 只能决定「任务进哪个
++ * 运行队列」，进了之后同一核上仍可能有多个 Yat 任务竞争。若 pick 完全
++ * 不看 assigned_cpu，那么「把 A 放到核 1」的决策在核 1 上有 A、B 两个
++ * 任务时就可能被 B 顶掉，assigned_cpu 就只是个观测字段。这里让决策
++ * 在竞争时拥有优先权，但用「两段式」保证它不会压过更紧急的任务
++ * （更小的 job_priority 在同一个偏好段内仍然胜出）。
 + */
++#define YAT_PICK_SCAN_LIMIT	8
++
 +struct task_struct *pick_next_task_yat_casched(struct rq *rq)
 +{
 +    struct yat_casched_rq *yat_rq = &rq->yat_casched;
 +    struct task_struct *p = NULL;
++    struct task_struct *fallback = NULL;
 +    struct sched_yat_casched_entity *yat_se;
 +    int best_priority = INT_MAX;
++    int fallback_priority = INT_MAX;
++    int scanned = 0;
 +
 +    if (yat_rq->nr_running == 0 || list_empty(&yat_rq->tasks))
 +        return NULL;
 +
 +    {
 +        struct list_head *pos;
-+        int count = 0;
 +
 +        list_for_each(pos, &yat_rq->tasks) {
 +            struct task_struct *task;
++            struct yat_job *job;
 +            int priority;
++            int assigned;
 +
-+            if (count >= 3)
++            if (scanned >= YAT_PICK_SCAN_LIMIT)
 +                break;
++            scanned++;
 +
 +            yat_se = list_entry(pos, struct sched_yat_casched_entity, run_list);
 +            task = container_of(yat_se, struct task_struct, yat_casched);
-+            priority = yat_se->job ? yat_se->job->job_priority : 0;
++            job = READ_ONCE(yat_se->job);
++            priority = job ? READ_ONCE(job->job_priority) : 0;
++            assigned = job ? READ_ONCE(job->assigned_cpu) : YAT_INVALID_CORE;
 +
-+            if (priority < best_priority) {
-+                best_priority = priority;
-+                p = task;
++            /* 第一段：AJLR 指定本核（或尚未决策）且优先级最优 */
++            if (assigned == rq->cpu || assigned == YAT_INVALID_CORE) {
++                if (priority < best_priority) {
++                    best_priority = priority;
++                    p = task;
++                }
 +            }
-+            count++;
++
++            /* 第二段：纯优先级兜底，只在第一段落空时才用 */
++            if (priority < fallback_priority) {
++                fallback_priority = priority;
++                fallback = task;
++            }
 +        }
++
++        if (!p)
++            p = fallback;
 +
 +        if (!p) {
 +            yat_se = list_first_entry(&yat_rq->tasks,
@@ -2070,7 +2423,43 @@ Upstream: linux v6.8 (torvalds)
 +
 +void prio_changed_yat_casched(struct rq *rq, struct task_struct *task, int oldprio)
 +{
-+    /* 优先级变化处理 */
++    /*
++     * 优先级变化后，作业的 job_priority 必须同步，否则下一次
++     * yat_find_best_core_for_job() / pick_next_task 仍按旧优先级排序。
++     * 这里不重排 run_queue：真正的顺序由 pick_next_task 每次现算，
++     * 而就绪池里的作业会在下一次 balance 时按新优先级重新插位。
++     */
++    if (task && task->yat_casched.job)
++        WRITE_ONCE(task->yat_casched.job->job_priority, task->rt_priority);
++}
++
++/*
++ * task_dead - 任务消亡时释放其绑定的作业。
++ *
++ * 为什么必须有这个回调：
++ *
++ *   enqueue_task 不再在每次唤醒时新建作业（那会泄漏，见该函数注释），
++ *   作业的生命周期改为「与 task_struct 同寿」。那么释放点只剩一个 ——
++ *   任务真正消亡时。核心调度器在 finish_task_switch() 里检测到
++ *   prev_state == TASK_DEAD 后会调用 sched_class->task_dead()，此时
++ *   任务已经完成最后一次切换，不会再被调度，且 task_struct 仍然有效。
++ *
++ * 上下文：**不能睡眠**（处于调度器核心路径）。yat_destroy_job() 只做
++ * 两次 spin_lock + kfree，没有睡眠式分配，符合要求。
++ *
++ * 注意这里必须先在同一 CPU 上把指针读出来再清空，避免重复释放：
++ * task_dead 每个任务只会被调用一次，但清空指针能让之后任何残留路径
++ * （例如 late dequeue）安全地看到 job == NULL 而不是悬垂指针。
++ */
++static void task_dead_yat_casched(struct task_struct *p)
++{
++    struct yat_job *job = READ_ONCE(p->yat_casched.job);
++
++    if (!job)
++        return;
++
++    WRITE_ONCE(p->yat_casched.job, NULL);
++    yat_destroy_job(job);
 +}
 +
 +/*
@@ -2093,6 +2482,7 @@ Upstream: linux v6.8 (torvalds)
 +    .rq_offline         = rq_offline_yat_casched,
 +    .pick_task          = pick_task_yat_casched,
 +    .task_tick          = task_tick_yat_casched,
++    .task_dead          = task_dead_yat_casched,
 +    .switched_to        = switched_to_yat_casched,
 +    .prio_changed       = prio_changed_yat_casched,
 +    .update_curr        = update_curr_yat_casched,
@@ -2319,6 +2709,25 @@ Upstream: linux v6.8 (torvalds)
 +    list_for_each_entry(dag, &global_dag_list, dag_list) {
 +        spin_lock(&dag->lock);
 +        list_for_each_entry(job, &dag->jobs, job_list) {
++            /*
++             * 跳过「隐式任务作业」。
++             *
++             * select_task_rq_yat_casched() 会为每个 SCHED_YAT_CASCHED
++             * 任务在默认 DAG 里建一个作业，它代表的是「这个任务这次
++             * 唤醒该放哪颗核」，其生命周期与任务绑定，而不是 DAG 依赖
++             * 图里的一个节点。把它也扫进全局就绪池会导致：
++             *   - 同一个任务被两条路径重复分配（select_task_rq 一次，
++             *     yat_schedule_ajlr 又一次），第二次的 best_core 覆盖
++             *     第一次的 assigned_cpu，trace 里出现自相矛盾的记录；
++             *   - 每轮 balance 都把全部存活任务重新入池一次，池子被
++             *     大量与「就绪」无关的条目灌满，YAT_BALANCE_MAX_BATCH
++             *     很快耗尽，真正的 DAG 作业反而排不上。
++             * 显式 DAG 作业（job->task == NULL，或由测试程序显式创建的
++             * 带 task 的作业）仍照常进入就绪池。
++             */
++            if (job->task && job->dag == yat_get_default_dag())
++                continue;
++
 +            if (job->state == YAT_JOB_WAITING && job->pending_predecessors == 0)
 +                yat_ready_pool_enqueue(pool, job);
 +        }
@@ -2395,8 +2804,24 @@ Upstream: linux v6.8 (torvalds)
 +         * 会让 yat_sum_exec_time_since() 凭空多出大量虚假执行时间，
 +         * CRP 比率被系统性拉偏。真实执行区间由 put_prev_task() 记账。
 +         */
-+        if (job->task && best_core == raw_smp_processor_id())
-+            resched_curr(cpu_rq(best_core));
++        WRITE_ONCE(job->assigned_cpu, best_core);
++
++        /*
++         * 6. 决策落地。
++         *
++         * 本函数运行在 balance 回调里，持有的是「当前 CPU」的 rq_lock。
++         * 跨核迁移需要目标 rq 的锁，在这里加锁会破坏
++         * rq_lock -> global_dag_lock -> dag->lock -> pool->lock 的顺序，
++         * 因此**不**在这里 set_task_cpu()。真正落地有两条路径：
++         *   - 任务下次唤醒时由 select_task_rq_yat_casched() 返回本核；
++         *   - 若任务此刻恰好在本核上可运行，触发一次本核重调度，
++         *     让它在 pick_next_task 里按新的 assigned_cpu 重新竞争。
++         * 原实现的 `best_core == raw_smp_processor_id()` 条件恒不成立
++         * （best_core 是按负载挑出的核，很少正好是本核），等价于空语句，
++         * 是一个「看起来在工作」的死分支。
++         */
++        if (job->task && task_cpu(job->task) == raw_smp_processor_id())
++            resched_curr(cpu_rq(raw_smp_processor_id()));
 +    }
 +}
 +
@@ -2479,32 +2904,24 @@ Upstream: linux v6.8 (torvalds)
 +static void yat_ajlr_enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 +{
 +    struct yat_job *job;
-+    struct yat_dag_task *default_dag;
-+    int user_priority;
-+    
-+    /* 检查任务是否已有关联的作业 */
-+    if (!p->yat_casched.job) {
-+        default_dag = yat_get_default_dag();
-+        if (!default_dag)
-+            return;
-+        
-+        user_priority = p->rt_priority;
-+        
-+        /*
-+         * GFP_ATOMIC：调用者已持 rq_lock（可能关中断），不能用
-+         * GFP_KERNEL。分配失败就放弃绑定 —— 调度器对 job == NULL
-+         * 已有处理路径，任务照常参与调度。
-+         */
-+        job = __yat_create_job(p->pid, user_priority, 1000000, default_dag,
-+                               GFP_ATOMIC);  /* 默认 1ms WCET */
-+        if (job) {
-+            p->yat_casched.job = job;
-+            job->task = p;
-+        }
-+    } else {
-+        /* 如果作业已存在，更新优先级 */
-+        p->yat_casched.job->job_priority = p->rt_priority;
-+    }
++
++    /*
++     * 统一走 yat_get_or_create_job()：它和 select_task_rq_yat_casched()
++     * 共用同一套「查/建 + 绑 task + WRITE_ONCE 发布」逻辑，
++     * WCET 也统一取 YAT_DEFAULT_WCET_NS。
++     *
++     * 原实现在这里硬编码 1000000 并自己写一遍 p->yat_casched.job = job，
++     * 与 select_task_rq 里的建法不一致：两处若任一处改了 WCET 或忘了
++     * WRITE_ONCE，就会出现「同一个任务在两个路径上看到的作业字段不同」。
++     * 更糟的是两处都判断 `if (!p->yat_casched.job)`，并发唤醒时可能
++     * 各自建一个作业，后写的覆盖先写的 —— 前者泄漏在 dag->jobs 上。
++     */
++    job = yat_get_or_create_job(p);
++    if (!job)
++        return;   /* 分配失败或默认 DAG 未就绪：任务照常参与调度 */
++
++    /* 优先级可能被 sched_setscheduler() 改过，每次入队都同步一次 */
++    WRITE_ONCE(job->job_priority, p->rt_priority);
 +}
 +
 +/*
