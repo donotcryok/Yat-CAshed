@@ -2,9 +2,11 @@ package tests;
 
 import entity.Node;
 import entity.RecencyProfileReal;
+import entity.SharedCacheModel;
 import allocation.WFD;
 import allocation.CacheAware_v2;
 import analyzer.PerformanceAnalyzer;
+import parameters.SystemParameters;
 import org.apache.commons.math3.util.Pair;
 
 import java.util.ArrayList;
@@ -22,6 +24,7 @@ import java.util.Random;
  *   [3] WFD             —— 最差适配（负载均衡）行为与重置
  *   [4] CacheAware_v2   —— 契约有效性（返回合法处理器，空输入返回 -1）
  *   [5] Speedup/Benefit —— 缓存敏感度收益阈值、命名差异、指标对称性边界
+ *   [6] 公平基线 C1    —— SharedCacheModel 不可变性、两算法口径一致、实测命中率
  *
  * 运行：make -C simulator test       （或 java -cp ... tests.YatSimulatorTest）
  * 退出码：0 全通过；1 存在失败用例。
@@ -357,6 +360,86 @@ public class YatSimulatorTest {
         checkEq("全部未分配 → 平均响应时间=0", 0.0, rU.averageResponseTime);
     }
 
+    /**
+     * [6] 公平基线 C1。
+     *
+     * <p>核心不变量：两种算法只允许在"选哪个处理器"上不同；放置确定之后，
+     * 执行时间与缓存命中必须由 {@link SharedCacheModel} 统一给出，且
+     * {@code expectedET} 作为基准不得被任何一次执行改写。
+     */
+    private static void testFairBaseline() {
+        section("6. 公平基线（SharedCacheModel / 口径一致）");
+
+        // A) execute() 不修改 expectedET —— 基准时间必须对两种算法相同
+        RecencyProfileReal crp = new RecencyProfileReal(100);
+        Node a = new Node(0, Node.NodeType.NORMAL, 1, 0, crp, new Random(11));
+        a.expectedET = 1000;
+        SharedCacheModel model = new SharedCacheModel(4, 2);
+        long etA = model.execute(a, 0);
+        checkEq("execute() 不修改 expectedET", 1000L, a.expectedET);
+        checkEq("冷启动首次访问 → 级别 4（内存）", 4, a.measuredCacheLevel);
+        checkEq("冷启动 → 执行时间 = base×1.2", 1200L, etA);
+        check("execute() 后 cacheMeasured=true", a.cacheMeasured);
+
+        // B) 同 DAG 再次落到同一处理器 → L1 命中（×0.8）
+        Node b = new Node(0, Node.NodeType.NORMAL, 2, 0, crp, new Random(12));
+        b.expectedET = 1000;
+        long etB = model.execute(b, 0);
+        checkEq("同 DAG 同核第二次访问 → 级别 1（L1）", 1, b.measuredCacheLevel);
+        checkEq("L1 命中 → 执行时间 = base×0.8", 800L, etB);
+        checkEq("L1 命中后 expectedET 仍为 1000", 1000L, b.expectedET);
+
+        // C) 级联语义：L1 命中意味着三级都命中
+        checkNear("L1 命中 → actualL1L2L3HitRatio = [1,1,1]",
+                3.0, b.actualL1L2L3HitRatio[0] + b.actualL1L2L3HitRatio[1] + b.actualL1L2L3HitRatio[2], 1e-9);
+
+        // D) 两种算法在"同一放置"下拿到完全相同的执行时间
+        SharedCacheModel m1 = new SharedCacheModel(4, 2);
+        SharedCacheModel m2 = new SharedCacheModel(4, 2);
+        long total1 = 0, total2 = 0;
+        for (int i = 0; i < 20; i++) {
+            Node n1 = new Node(0, Node.NodeType.NORMAL, i, i / 2, crp, new Random(100 + i));
+            Node n2 = new Node(0, Node.NodeType.NORMAL, i, i / 2, crp, new Random(100 + i));
+            n1.expectedET = n2.expectedET = 500 + i * 10;
+            int proc = i % 4;
+            total1 += m1.execute(n1, proc);
+            total2 += m2.execute(n2, proc);
+        }
+        checkEq("同一放置序列下两个模型的总执行时间相同", total1, total2);
+
+        // E) 分析器读实测值，而不是按算法名套公式
+        List<Node> measured = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Node n = new Node(0, Node.NodeType.NORMAL, i, i / 2, crp, new Random(200 + i));
+            n.expectedET = 400;
+            n.weights = new double[] {0.5, 0.3, 0.15, 0.05};
+            new SharedCacheModel(4, 2).execute(n, 0); // 每个任务冷启动 → 级别 4
+            measured.add(n);
+        }
+        PerformanceAnalyzer fairPa = new PerformanceAnalyzer();
+        PerformanceAnalyzer.ExperimentResult rWfdFair =
+                fairPa.analyzeAlgorithmPerformance("WFD", 20, measured, 4, 0, 1.0);
+        PerformanceAnalyzer.ExperimentResult rCaFair =
+                fairPa.analyzeAlgorithmPerformance("CacheAware_v2", 21, measured, 4, 0, 1.0);
+        checkNear("实测命中率与算法名无关（WFD）", 0.0, rWfdFair.cacheHitRatio, 1e-9);
+        checkNear("实测命中率与算法名无关（CacheAware）", 0.0, rCaFair.cacheHitRatio, 1e-9);
+
+        // F) legacy 口径仍保留历史差异（用于复现旧基线），但需显式开启
+        PerformanceAnalyzer legacyPa = new PerformanceAnalyzer(true);
+        check("legacy 标志已开启", legacyPa.isLegacyMetrics());
+        PerformanceAnalyzer fairPa2 = new PerformanceAnalyzer();
+        check("默认构造为公平口径", !fairPa2.isLegacyMetrics());
+
+        // G) CacheAware 默认不写回自估命中率（legacyWriteBack 关闭）
+        CacheAware_v2.resetState();
+        Node probe = new Node(0, Node.NodeType.NORMAL, 1, 0, crp, new Random(31));
+        probe.expectedET = 300;
+        probe.sensitivity = 0.9;
+        probe.weights = new double[] {0.6, 0.25, 0.1, 0.05};
+        checkEq("公平口径下 actualCacheHitRatio 初始为 0", 0.0, probe.actualCacheHitRatio);
+        CacheAware_v2.resetState();
+    }
+
     public static void main(String[] args) {
         System.out.println("==========================================");
         System.out.println(" Yat-CAShed 模拟器单元测试");
@@ -368,6 +451,7 @@ public class YatSimulatorTest {
         testWFD();
         testCacheAware();
         testSpeedupBenefitBoundaries();
+        testFairBaseline();
 
         System.out.println("\n==========================================");
         System.out.printf(" 通过: %d   失败: %d%n", passed, failed);

@@ -125,11 +125,26 @@ public class Node implements Serializable {
      */
     public double actualCacheHitRatio = 0.0;
     
-    /** 
+    /**
      * 各级缓存的实际命中率 [L1, L2, L3]
      * 分别记录L1、L2、L3缓存的命中率
      */
     public double[] actualL1L2L3HitRatio = new double[3];
+    
+    /**
+     * 是否已经由「共享执行模型」实测过缓存结果。
+     *
+     * <p>公平基线要求：WFD 与 CacheAware 必须由**同一个**模型算出执行时间与
+     * 命中率，且结果写回任务自身。性能分析器只认这个标志为 true 的实测值，
+     * 不再按算法名做估算（旧行为见 {@code --legacy-metrics}）。
+     */
+    public boolean cacheMeasured = false;
+    
+    /**
+     * 实测命中的缓存级别（1=L1, 2=L2, 3=L3, 4=内存；0=未测量）。
+     * 由共享执行模型写入，供公平性单元测试直接断言。
+     */
+    public int measuredCacheLevel = 0;
     
     /**
      * 任务节点构造函数

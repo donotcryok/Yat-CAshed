@@ -25,6 +25,20 @@ public class CacheAware_v2 extends AllocationMethods {      /** 处理器负载�
     
     /** 缓存命中率统计 */
     private static Map<Integer, CacheHitStats> cacheHitStats = new HashMap<>();
+
+    /**
+     * 旧口径开关：仅用于 {@code --legacy-metrics} 复现历史基线。
+     *
+     * <p>开启后会把算法自估的命中率写回 {@link Node#actualCacheHitRatio}，
+     * 这正是旧实验"CacheAware 命中率天然更高"的不公平来源之一。
+     * 公平基线（默认 false）下**任何**算法都不会写回该字段。
+     */
+    private static boolean legacyWriteBack = false;
+
+    /** 仅供 {@code --legacy-metrics} 使用；公平基线请勿调用。 */
+    public static void setLegacyWriteBack(boolean enabled) {
+        legacyWriteBack = enabled;
+    }
       /**
      * 处理器缓存状态
      */
@@ -313,12 +327,12 @@ public class CacheAware_v2 extends AllocationMethods {      /** 处理器负载�
             return;
         }
         
-        // 计算实际的缓存访问和命中
+        // 计算缓存访问和"预期"命中（仅用于算法内部的状态观测，不写回任务）
         double l1Access = task.weights[0] * task.sensitivity;
         double l2Access = task.weights[1] * task.sensitivity;
         double l3Access = task.weights[2] * task.sensitivity;
         
-        // 基于当前缓存状态计算命中率
+        // 基于当前缓存状态估计命中率
         double l1HitRatio = Math.max(0, task.weights[0] * (1.0 - cacheState.l1Utilization * 0.8));
         double l2HitRatio = Math.max(0, task.weights[1] * (1.0 - cacheState.l2Utilization * 0.6));
         double l3HitRatio = Math.max(0, task.weights[2] * (1.0 - cacheState.l3Utilization * 0.4));
@@ -331,17 +345,21 @@ public class CacheAware_v2 extends AllocationMethods {      /** 处理器负载�
         stats.totalL1Hits += l1Access * l1HitRatio;
         stats.totalL2Hits += l2Access * l2HitRatio;
         stats.totalL3Hits += l3Access * l3HitRatio;
-          stats.totalTasks++;
-        
-        // 将命中率信息记录到任务中（用于后续分析）
-        double totalAccesses = stats.totalL1Accesses + stats.totalL2Accesses + stats.totalL3Accesses;
-        double totalHits = stats.totalL1Hits + stats.totalL2Hits + stats.totalL3Hits;
-        task.actualCacheHitRatio = totalAccesses > 0 ? totalHits / totalAccesses : 0.0;
-        
-        // 记录各级缓存的命中率
-        task.actualL1L2L3HitRatio[0] = l1HitRatio;
-        task.actualL1L2L3HitRatio[1] = l2HitRatio;
-        task.actualL1L2L3HitRatio[2] = l3HitRatio;
+        stats.totalTasks++;
+
+        // 公平基线（C1）：默认**不再**把自估命中率写回 task.actualCacheHitRatio /
+        // task.actualL1L2L3HitRatio。任务的实测缓存结果只由 entity.SharedCacheModel
+        // 在"任务真正被执行"时写入，两种算法口径完全一致。
+        //
+        // 以下分支仅在 --legacy-metrics 下启用，用于逐位复现改造前的历史基线。
+        if (legacyWriteBack) {
+            double totalAccesses = stats.totalL1Accesses + stats.totalL2Accesses + stats.totalL3Accesses;
+            double totalHits = stats.totalL1Hits + stats.totalL2Hits + stats.totalL3Hits;
+            task.actualCacheHitRatio = totalAccesses > 0 ? totalHits / totalAccesses : 0.0;
+            task.actualL1L2L3HitRatio[0] = l1HitRatio;
+            task.actualL1L2L3HitRatio[1] = l2HitRatio;
+            task.actualL1L2L3HitRatio[2] = l3HitRatio;
+        }
     }
       /**
      * 计算缓存感知的执行时间

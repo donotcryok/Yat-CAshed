@@ -30,6 +30,16 @@ import entity.RecencyProfileReal;
  * @author Cache-Aware Task Scheduling System
  */
 public class EnhancedTaskGenerator {
+    /**
+     * 每组 DAG 的任务数：任务编号 {@code id} 落在 {@code [k*N, (k+1)*N)} 时属于 DAG {@code k}。
+     *
+     * <p>这个分组是缓存局部性的唯一来源——同 DAG 的相邻任务倾向于复用同一批数据。
+     * 若所有任务共享同一个 DAG（例如早期的 {@code dagID = 0}），
+     * {@code RecencyProfileReal} / {@code SharedCacheModel} 的"最近访问"判定
+     * 就退化为纯窗口计数，缓存亲和性不再有可利用的信号。
+     */
+    public static final int DAG_TASKS_PER_GROUP = 5;
+
     private Random rng;
     private int cores;
     
@@ -79,7 +89,7 @@ public class EnhancedTaskGenerator {
         wcet = Math.max(wcet, 10); // 最小执行时间
         wcet = Math.min(wcet, period); // 不能超过周期
         
-        Node task = new Node(0, NodeType.NORMAL, taskId, taskId / 5, crp, rng);
+        Node task = new Node(0, NodeType.NORMAL, taskId, taskId / DAG_TASKS_PER_GROUP, crp, rng);
         task.expectedET = wcet;
         
         // 设置缓存敏感度（这是Cache-Aware算法的关键）
@@ -219,9 +229,17 @@ public class EnhancedTaskGenerator {
     private Node createCacheIntensiveTask(int taskId, double utilization, boolean isHighSensitivity) {
         // 创建RecencyProfile
         RecencyProfileReal profile = createCacheIntensiveProfile(isHighSensitivity);
-        
-        // 使用Node类的正确构造函数
-        Node task = new Node(0, NodeType.NORMAL, taskId, 0, profile, rng);
+
+        // 使用Node类的正确构造函数。
+        //
+        // 注意：dagID 必须按"每 DAG 若干任务"分组，不能恒为 0。
+        // 缓存局部性（RecencyProfileReal / SharedCacheModel）的判定依据是
+        // "最近若干次访问中是否存在同 dagID 的任务"，若所有任务共享 dagID=0，
+        // 该判定就退化为纯粹的窗口计数，缓存亲和性调度将失去可以被利用的信号，
+        // 两种算法也就无法在"局部性"维度上被公平地区分开。
+        // 这里与 createTaskFromUtilization() 保持一致：每 DAG_TASKS_PER_GROUP 个任务为同一 DAG。
+        int dagID = taskId / DAG_TASKS_PER_GROUP;
+        Node task = new Node(0, NodeType.NORMAL, taskId, dagID, profile, rng);
         
         // 基础执行时间计算
         long baseExecutionTime = (long)(utilization * 1000000); // 基于利用率的执行时间

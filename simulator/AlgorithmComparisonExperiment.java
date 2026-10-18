@@ -11,6 +11,7 @@ import allocation.CacheAware_v2;
 import analyzer.PerformanceAnalyzer;
 import analyzer.PerformanceAnalyzer.ExperimentResult;
 import entity.Node;
+import entity.SharedCacheModel;
 import generator.EnhancedTaskGenerator;
 import parameters.SystemParameters;
 import visualizer.ResultVisualizer;
@@ -63,6 +64,18 @@ public class AlgorithmComparisonExperiment {
 
     /** 是否生成可视化（--no-viz 关闭；快速/CI 场景建议关闭） */
     private static boolean ENABLE_VIZ = true;
+
+    /**
+     * 是否使用旧的（不公平）度量口径，仅用于复现历史结果做对比。
+     *
+     * <p>开启后：WFD 走原始 {@code expectedET}、CacheAware 走
+     * {@code CacheAware_v2.calculateExecutionTime()}，且命中率由
+     * {@code PerformanceAnalyzer} 按算法名估算。默认关闭，即公平基线（C1）。
+     */
+    private static boolean LEGACY_METRICS = false;
+
+    /** 多随机种子（--seeds=1,2,3 或 --seeds=5 表示 1..5）；为空表示只用 seed。 */
+    private static long[] SEEDS = null;
     
     /** 
      * 系统利用率测试级别数组
@@ -103,6 +116,8 @@ public class AlgorithmComparisonExperiment {
      *   --cases=N      总测试案例数（默认 100）
      *   --tasks=N      每案例任务数（默认 60）
      *   --seed=N       随机种子（默认 42）
+     *   --seeds=a,b,c  多随机种子；也可写 --seeds=K 表示 1..K
+     *   --legacy-metrics  使用旧的（不公平）口径复现历史结果
      *   --no-viz       跳过 Python 可视化（快速/CI 场景）
      *   -h, --help     打印帮助
      */
@@ -111,9 +126,12 @@ public class AlgorithmComparisonExperiment {
             try {
                 if (arg.equals("--no-viz")) {
                     ENABLE_VIZ = false;
+                } else if (arg.equals("--legacy-metrics")) {
+                    LEGACY_METRICS = true;
                 } else if (arg.equals("-h") || arg.equals("--help")) {
                     System.out.println("用法: java AlgorithmComparisonExperiment "
-                        + "[--cores=N] [--cases=N] [--tasks=N] [--seed=N] [--no-viz]");
+                        + "[--cores=N] [--cases=N] [--tasks=N] [--seed=N] [--seeds=a,b,c] "
+                        + "[--legacy-metrics] [--no-viz]");
                     System.exit(0);
                 } else if (arg.startsWith("--cores=")) {
                     CORES = Math.max(1, Integer.parseInt(arg.substring(8)));
@@ -123,6 +141,8 @@ public class AlgorithmComparisonExperiment {
                     TASKS_PER_CASE = Math.max(1, Integer.parseInt(arg.substring(8)));
                 } else if (arg.startsWith("--seed=")) {
                     SEED = Long.parseLong(arg.substring(7));
+                } else if (arg.startsWith("--seeds=")) {
+                    SEEDS = parseSeeds(arg.substring(8));
                 } else {
                     System.out.println("⚠️  忽略未知参数: " + arg);
                 }
@@ -133,28 +153,181 @@ public class AlgorithmComparisonExperiment {
         }
     }
 
+    /**
+     * 解析 --seeds 参数。
+     * <ul>
+     *   <li>{@code --seeds=1,2,3} → 精确的三个种子</li>
+     *   <li>{@code --seeds=5} → 简写，等价于 {@code 1,2,3,4,5}</li>
+     * </ul>
+     */
+    private static long[] parseSeeds(String spec) {
+        if (spec == null || spec.trim().isEmpty()) {
+            return null;
+        }
+        String[] parts = spec.split(",");
+        if (parts.length == 1 && !parts[0].contains("-")) {
+            int count = Integer.parseInt(parts[0].trim());
+            if (count <= 0) {
+                throw new NumberFormatException("seeds 数量必须为正");
+            }
+            long[] seeds = new long[count];
+            for (int i = 0; i < count; i++) {
+                seeds[i] = i + 1L;
+            }
+            return seeds;
+        }
+        long[] seeds = new long[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            seeds[i] = Long.parseLong(parts[i].trim());
+        }
+        return seeds;
+    }
+
     public static void main(String[] args) {
         parseArgs(args);
         System.out.println("=== WFD vs CacheAware_v2算法性能对比实验 ===");
-        System.out.println("🎯 目标：验证CacheAware_v2算法的性能优势");
+        System.out.println("🎯 目标：在**统一执行/缓存模型**下对比两种放置策略（公平基线 C1）");
         System.out.println("📊 实验规模: " + TOTAL_TEST_CASES + " 个测试案例");
         System.out.println("💻 处理器核心数: " + CORES);
         System.out.println("📋 每案例任务数: " + TASKS_PER_CASE);
         System.out.println("⚡ 高缓存敏感任务比例: " + (HIGH_CACHE_SENSITIVITY_RATIO * 100) + "%");
         System.out.println("📈 利用率级别: " + java.util.Arrays.toString(UTILIZATION_LEVELS));
+        System.out.println("🧪 度量口径: " + (LEGACY_METRICS
+                ? "LEGACY（旧的不公平口径，仅用于对比）"
+                : "FAIR（WFD/CacheAware 共用 SharedCacheModel）"));
+        if (SEEDS != null) {
+            System.out.println("🎲 随机种子: " + java.util.Arrays.toString(SEEDS));
+        } else {
+            System.out.println("🎲 随机种子: " + SEED);
+        }
         System.out.println();
-        
-        // 初始化分析和可视化组件
-        analyzer = new PerformanceAnalyzer();
-        visualizer = new ResultVisualizer();
         
         // 设置系统参数
         setupSystemParameters();
         
-        // 运行对比实验
-        runComparison();
+        if (SEEDS == null) {
+            // 单种子路径（保持历史行为）
+            analyzer = new PerformanceAnalyzer(LEGACY_METRICS);
+            visualizer = new ResultVisualizer();
+            runComparison(SEED, true);
+        } else {
+            runMultiSeed();
+        }
         
         System.out.println("=== 实验完成 ===");
+    }
+
+    /**
+     * 多种子实验：每个种子独立跑一遍，然后汇总均值 / 标准差 / 95% 置信区间。
+     *
+     * <p>公平性不只要"口径一致"，还要能说明差异不是某个种子挑出来的。
+     */
+    private static void runMultiSeed() {
+        int n = SEEDS.length;
+        double[] makespanImp = new double[n];
+        double[] hitImp = new double[n];
+        double[] winRate = new double[n];
+
+        for (int i = 0; i < n; i++) {
+            System.out.println("\n" + "-".repeat(70));
+            System.out.printf("🎲 种子 %d/%d: %d%n", i + 1, n, SEEDS[i]);
+            System.out.println("-".repeat(70));
+
+            analyzer = new PerformanceAnalyzer(LEGACY_METRICS);
+            visualizer = new ResultVisualizer();
+            SeedSummary s = runComparison(SEEDS[i], false);
+            makespanImp[i] = s.makespanImprovementPct;
+            hitImp[i] = s.cacheHitImprovementPct;
+            winRate[i] = s.cacheAwareWinRatePct;
+        }
+
+        System.out.println("\n" + "=".repeat(80));
+        System.out.println("📊 多种子汇总（公平基线 C1）");
+        System.out.println("=".repeat(80));
+        printAggregate("Makespan 改进 (%)", makespanImp);
+        printAggregate("缓存命中率提升 (百分点)", hitImp);
+        printAggregate("CacheAware 胜率 (%)", winRate);
+        System.out.println("=".repeat(80));
+    }
+
+    /**
+     * 95% 置信区间应使用的双侧临界值。
+     *
+     * <p>n 很小时用正态近似（1.96）会**低估**区间，从而把「不显著」误判为「显著」。
+     * n=5 时 t(0.975, 4) = 2.776，几乎是 1.96 的 1.42 倍。这里按自由度查表，
+     * 表中没有的较大自由度退回 1.96（此时 t 与正态差异 < 1%）。
+     */
+    private static double tCritical95(int n) {
+        int df = n - 1;
+        switch (df) {
+            case 1:  return 12.706;
+            case 2:  return 4.303;
+            case 3:  return 3.182;
+            case 4:  return 2.776;
+            case 5:  return 2.571;
+            case 6:  return 2.447;
+            case 7:  return 2.365;
+            case 8:  return 2.306;
+            case 9:  return 2.262;
+            case 10: return 2.228;
+            case 11: return 2.201;
+            case 12: return 2.179;
+            case 13: return 2.160;
+            case 14: return 2.145;
+            case 15: return 2.131;
+            case 16: return 2.120;
+            case 17: return 2.110;
+            case 18: return 2.101;
+            case 19: return 2.093;
+            case 20: return 2.086;
+            case 21: return 2.080;
+            case 22: return 2.074;
+            case 23: return 2.069;
+            case 24: return 2.064;
+            case 25: return 2.060;
+            case 26: return 2.056;
+            case 27: return 2.052;
+            case 28: return 2.048;
+            case 29: return 2.045;
+            case 30: return 2.042;
+            default: return 1.96;
+        }
+    }
+
+    /** 打印一组样本的均值、样本标准差与 95% 置信区间半宽。 */
+    private static void printAggregate(String label, double[] xs) {
+        int n = xs.length;
+        double mean = 0;
+        for (double x : xs) {
+            mean += x;
+        }
+        mean /= n;
+
+        double variance = 0;
+        if (n > 1) {
+            for (double x : xs) {
+                variance += (x - mean) * (x - mean);
+            }
+            variance /= (n - 1);
+        }
+        double sd = Math.sqrt(variance);
+        double t = tCritical95(n);
+        double ci = n > 1 ? t * sd / Math.sqrt(n) : 0.0;
+
+        System.out.printf("   %-28s 均值=%8.3f  标准差=%7.3f  95%%CI=±%.3f  (n=%d, t=%.3f)%n",
+                label, mean, sd, ci, n, n > 1 ? t : Double.NaN);
+        System.out.print("      样本: [");
+        for (int i = 0; i < n; i++) {
+            System.out.printf("%s%.2f", i == 0 ? "" : ", ", xs[i]);
+        }
+        System.out.println("]");
+    }
+
+    /** 单次运行的汇总数据。 */
+    private static final class SeedSummary {
+        double makespanImprovementPct;
+        double cacheHitImprovementPct;
+        double cacheAwareWinRatePct;
     }
       /**
      * 设置系统参数配置
@@ -191,11 +364,15 @@ public class AlgorithmComparisonExperiment {
      * 6. 统计胜负情况和性能改进
      * 7. 生成最终分析报告和可视化
      */
-    private static void runComparison() {
+    private static SeedSummary runComparison(long seed, boolean withViz) {
+        SeedSummary summary = new SeedSummary();
         System.out.println("🚀 开始WFD vs CacheAware_v2对比实验...\n");
-        
+
+        // 旧口径下才允许 CacheAware 把自估命中率写回任务；公平基线永不写回。
+        CacheAware_v2.setLegacyWriteBack(LEGACY_METRICS);
+
         // 初始化随机数生成器和任务生成器
-        Random rng = new Random(SEED); // 固定种子确保结果可重复（可由 --seed= 覆盖）
+        Random rng = new Random(seed); // 固定种子确保结果可重复（可由 --seed=/--seeds= 覆盖）
         EnhancedTaskGenerator taskGenerator = new EnhancedTaskGenerator(CORES, rng);
         
         // 存储各算法的实验结果
@@ -264,7 +441,9 @@ public class AlgorithmComparisonExperiment {
                 algorithmResults.get("CacheAware_v2").add(cacheResult);
                 
                 // 计算性能差异
-                double makespanImprovement = ((double)(wfdResult.makespan - cacheResult.makespan)) / wfdResult.makespan;
+                double makespanImprovement = wfdResult.makespan > 0
+                        ? (wfdResult.makespan - cacheResult.makespan) / wfdResult.makespan
+                        : 0.0;
                 double cacheHitImprovement = cacheResult.cacheHitRatio - wfdResult.cacheHitRatio;
                 
                 totalMakespanImprovement += makespanImprovement;
@@ -301,8 +480,10 @@ public class AlgorithmComparisonExperiment {
                       totalMakespanImprovement, totalCacheHitImprovement);
         
         // 生成可视化图表（快速/CI 场景可用 --no-viz 跳过）
-        if (ENABLE_VIZ) {
+        if (withViz && ENABLE_VIZ) {
             generateVisualization(algorithmResults);
+        } else if (!withViz) {
+            System.out.println("ℹ️  多种子模式：跳过可视化（仅做统计汇总）");
         } else {
             System.out.println("ℹ️  已通过 --no-viz 跳过可视化生成");
         }
@@ -310,7 +491,14 @@ public class AlgorithmComparisonExperiment {
         // 重置算法状态
         WFD.resetLoads();
         CacheAware_v2.resetState();
-    }    /**
+        
+        summary.makespanImprovementPct = (totalMakespanImprovement / completedTests) * 100.0;
+        summary.cacheHitImprovementPct = (totalCacheHitImprovement / completedTests) * 100.0;
+        summary.cacheAwareWinRatePct = (double) cacheAwareWins / completedTests * 100.0;
+        return summary;
+    }
+
+    /**
      * 模拟Cache-Aware算法的任务分配过程
      * 
      * 该方法模拟Cache-Aware算法的完整执行过程，包括：
@@ -323,8 +511,12 @@ public class AlgorithmComparisonExperiment {
      * @param processors 可用处理器列表
      * @param algorithm Cache-Aware算法实例
      */
-    private static void simulateCacheAwareAllocation(List<Node> tasks, 
+    private static void simulateCacheAwareAllocation(List<Node> tasks,
             List<Integer> processors, CacheAware_v2 algorithm) {
+        
+        // 共享执行/缓存模型：与 WFD 完全同一套口径（公平基线 C1）
+        SharedCacheModel cacheModel = new SharedCacheModel(
+                processors.size(), SystemParameters.Level2CoreNum);
         
         // 处理器负载跟踪数组
         long[] processorLoads = new long[processors.size()];
@@ -335,28 +527,38 @@ public class AlgorithmComparisonExperiment {
             List<Node> readyTasks = new ArrayList<>();
             readyTasks.add(task);
             
-            // 调用Cache-Aware算法进行任务分配
+            // 调用Cache-Aware算法进行任务分配（**唯一的**差异点：选哪个处理器）
             int allocatedProcessor = algorithm.allocate(readyTasks, processors);
             
             if (allocatedProcessor != -1) {
                 // 记录任务分配结果
                 task.partition = allocatedProcessor;
                 
-                // 使用Cache-Aware算法的执行时间计算
-                // 这里会考虑缓存优化带来的性能提升
-                long enhancedET = CacheAware_v2.calculateExecutionTime(task, allocatedProcessor);
-                
-                // 更新任务的实际执行时间
-                task.expectedET = enhancedET;
+                // 由共享模型统一计算执行时间与缓存命中（不修改 expectedET）
+                long et = LEGACY_METRICS
+                        ? legacyCacheAwareET(task, allocatedProcessor)
+                        : cacheModel.execute(task, allocatedProcessor);
                 
                 // 计算任务的调度时间
                 task.start = processorLoads[allocatedProcessor];
-                task.finishAt = task.start + enhancedET;
+                task.finishAt = task.start + et;
                 processorLoads[allocatedProcessor] = task.finishAt;
                 task.finish = true;
             }
         }
-    }    /**
+    }
+
+    /**
+     * 旧口径（仅 --legacy-metrics 复现历史结果时使用）：用 v2 内部估计模型算执行时间。
+     */
+    private static long legacyCacheAwareET(Node task, int processor) {
+        long original = task.expectedET;
+        long et = CacheAware_v2.calculateExecutionTime(task, processor);
+        task.expectedET = original; // 即使旧口径也不覆盖基准时间
+        return et;
+    }
+
+    /**
      * 模拟WFD算法的任务分配过程
      * 
      * 该方法模拟传统WFD算法的执行过程，作为对比基准：
@@ -370,6 +572,10 @@ public class AlgorithmComparisonExperiment {
      * @param algorithm WFD算法实例
      */
     private static void simulateWFDAllocation(List<Node> tasks, List<Integer> processors, WFD algorithm) {
+        // 共享执行/缓存模型：与 CacheAware 完全同一套口径（公平基线 C1）
+        SharedCacheModel cacheModel = new SharedCacheModel(
+                processors.size(), SystemParameters.Level2CoreNum);
+        
         // 处理器负载跟踪数组
         long[] processorLoads = new long[processors.size()];
         
@@ -379,15 +585,18 @@ public class AlgorithmComparisonExperiment {
             List<Node> readyTasks = new ArrayList<>();
             readyTasks.add(task);
             
-            // 调用WFD算法进行任务分配
+            // 调用WFD算法进行任务分配（**唯一的**差异点：选哪个处理器）
             int allocatedProcessor = algorithm.allocate(readyTasks, processors);
             
             if (allocatedProcessor != -1) {
                 // 记录任务分配结果
                 task.partition = allocatedProcessor;
                 
-                // WFD使用原始执行时间（无缓存优化）
-                long executionTime = task.expectedET;
+                // 由共享模型统一计算执行时间与缓存命中。
+                // 注意：不再直接使用未经缓存建模的 expectedET，也不覆盖它。
+                long executionTime = LEGACY_METRICS
+                        ? task.expectedET
+                        : cacheModel.execute(task, allocatedProcessor);
                 
                 // 计算任务的调度时间
                 task.start = processorLoads[allocatedProcessor];
@@ -451,8 +660,10 @@ public class AlgorithmComparisonExperiment {
         
         System.out.println("🏆 总体性能对比:");
         System.out.printf("   📊 测试案例总数: %d\n", totalTests);
-        System.out.printf("   ⏱️  平均Makespan改进: %.2f%%\n", avgMakespanImprovement);
-        System.out.printf("   🎯 平均缓存命中率改进: %.2f%%\n", avgCacheHitImprovement);
+        // 注意：这里是「逐用例相对改进的配对均值」，不是 (均值之差 / 均值) 的比值口径
+        System.out.printf("   ⏱️  平均Makespan改进（配对均值）: %.2f%%\n", avgMakespanImprovement);
+        // 命中率差是「百分点」而非相对百分比，单位不可写成 %
+        System.out.printf("   🎯 平均缓存命中率改进: %.2f 个百分点\n", avgCacheHitImprovement);
         System.out.printf("   🏅 CacheAware_v2胜率: %d/%d = %.1f%%\n", 
                           cacheAwareWins, totalTests, winRate);
         
@@ -475,15 +686,23 @@ public class AlgorithmComparisonExperiment {
         System.out.printf("     - 平均缓存命中率: %.3f (%.1f%%)\n", cacheAvgCacheHit, cacheAvgCacheHit * 100);
         
         System.out.printf("   性能改进:\n");
-        System.out.printf("     - Makespan减少: %.0f ns (%.2f%%)\n", 
-                          wfdAvgMakespan - cacheAvgMakespan, 
+        // 比值口径（均值之差 / WFD 均值）——便于直觉，但会被大用例主导
+        System.out.printf("     - Makespan减少（比值口径）: %.0f ns (%.2f%%)\n",
+                          wfdAvgMakespan - cacheAvgMakespan,
                           ((wfdAvgMakespan - cacheAvgMakespan) / wfdAvgMakespan) * 100);
+        // 配对口径（逐用例相对改进的均值）——统计检验应用这个
+        System.out.printf("     - Makespan改进（配对均值，用于显著性检验）: %.2f%%\n",
+                          avgMakespanImprovement);
         System.out.printf("     - 缓存命中率提升: %.3f (%.1f个百分点)\n", 
                           cacheAvgCacheHit - wfdAvgCacheHit,
                           (cacheAvgCacheHit - wfdAvgCacheHit) * 100);
         
         // 结果评估
         System.out.println("\n🔍 结果评估:");
+        if (totalTests < 20) {
+            System.out.printf("   ℹ️  样本量 n=%d < 20，均值与胜率的方差很大，"
+                    + "该行结论仅作冒烟提示，不作为算法结论\n", totalTests);
+        }
         if (avgMakespanImprovement > 15) {
             System.out.println("   ✅ Makespan改进显著 (>15%)，CacheAware_v2算法优势明显");
         } else if (avgMakespanImprovement > 5) {

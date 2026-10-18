@@ -3,6 +3,13 @@
 > **一个高性能的缓存感知任务调度模拟器**
 > 专注于多核处理器环境下的缓存敏感任务调度算法研究
 
+> ℹ️ **文档定位**：本文是模拟器的**设计说明与实验解读**（含算法原理、12 步流程、
+> 指标公式）。**当前命令、依赖与目录结构**以
+> [`../docs/DEVELOPMENT.md`](../docs/DEVELOPMENT.md)、
+> [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) 为准；
+> 实验数据与有效性威胁见 [`../docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md)。
+> 本文中出现的具体数值为历史一次运行的结果，仅供量级参考。
+
 [![Java](https://img.shields.io/badge/Java-17+-orange.svg)](https://www.oracle.com/java/)
 [![Build](https://img.shields.io/badge/Build-Success-green.svg)](#快速开始)
 [![License](https://img.shields.io/badge/License-Academic-blue.svg)](#)
@@ -67,13 +74,15 @@
 
 ### 技术特色
 
-| 特性                   | 描述                       | 优势               |
-| ---------------------- | -------------------------- | ------------------ |
-| **缓存感知调度** | 考虑任务缓存特性的智能调度 | 提升15-25%执行效率 |
-| **动态负载均衡** | 实时调整处理器负载分布     | 改善30%负载均衡度  |
-| **多层缓存建模** | 精确的缓存层次结构仿真     | 真实反映硬件特性   |
-| **可重现实验**   | 固定随机种子确保结果一致   | 100%可重现性保证   |
-| **大规模验证**   | 支持100+测试案例批量验证   | 统计显著性验证     |
+| 特性 | 描述 | 现状 |
+| --- | --- | --- |
+| **缓存感知调度** | 考虑任务缓存敏感度与 DAG 局部性 | 公平口径下 Makespan 差异不显著（见 §4.5） |
+| **动态负载均衡** | 评分中含负载项，任务落点仍以缓存亲和为主 | 均衡度 +0.005，非主要收益来源 |
+| **多层缓存建模** | 四级（L1/L2/L3/内存）统一模型 | 层级代价为**人为设定参数**，非硬件实测 |
+| **可重现实验** | 固定随机种子 + `--seeds=` 多种子复核 | 同机同 Java 版本下可复现 |
+| **公平基线** | 两算法共用 [`SharedCacheModel`](entity/SharedCacheModel.java#L39) | ✅ C1 起强制；旧口径可由 `--legacy-metrics` 复现 |
+
+> 早期版本此处写的"提升 15-25% 执行效率""改善 30% 负载均衡度"来自旧（不公平）口径，**已按公平基线订正**。
 
 ---
 
@@ -172,24 +181,25 @@ make all          # Linux/macOS
    - Tests per algorithm: 100 cases
    - Detected algorithms: CacheAware_v2, WFD
 
-📊 Detailed Performance Metric Comparison:
+📊 Detailed Performance Metric Comparison (公平基线 C1, seed=42):
 
 🔍 Makespan:
-   CacheAware_v2  : Average 110245.3 time units | Std Dev 12.4 | Range [95470.0, 136064.0]
-   WFD           : Average 125678.9 time units | Std Dev 15.2 | Range [102345.0, 148923.0]
+   CacheAware_v2  : Average 176436.8 time units | Std Dev 46735.1 | Range [约 120k, 约 265k]
+   WFD           : Average 177686.2 time units | Std Dev 47020.4 | Range [约 119k, 约 219k]
 
-� Cache Hit Rate:
-   CacheAware_v2  : Average 73.8% | Std Dev 0.4 | Range [72.9%, 74.5%]
-   WFD           : Average 45.2% | Std Dev 2.1 | Range [42.1%, 48.7%]
+🔍 Cache Hit Rate:
+   CacheAware_v2  : Average 18.90% | WFD: 18.08%   （差 +0.82 pp）
 
 🔍 Total Execution Time:
-   CacheAware_v2  : Average 715234 time units | Std Dev 45.2 | Range [662450, 872615]
-   WFD           : Average 845678 time units | Std Dev 62.8 | Range [723456, 967890]
+   CacheAware_v2  : Average 1143921.0 time units
+   WFD           : Average 1144965.6 time units
 
-🚀 Cache-Aware Algorithm Improvement Effects:
-   📉 Makespan reduction: +12.3%
-   📈 Cache hit rate improvement: +28.6%
-   ⚡ Execution time reduction: +15.4%
+🚀 Fair-Baseline Improvement Effects:
+   📉 Makespan（配对均值）: -0.39%，95% CI ±1.51%  → 跨 0，不显著
+   📈 Cache hit rate improvement: +0.82 pp
+   ⚡ Execution time reduction: -0.09%
+   🏆 Win rate: CacheAware 56 / WFD 44
+   ⚠️ 旧口径下的 +12.3% / +28.6% 已不可复现（见 §3.6）
 
 ================================================================================
 ✅ Comprehensive analysis report generation completed
@@ -347,32 +357,24 @@ pip包管理器
 | **完整构建** | `make all` | `.\build.bat all` | 构建+测试完整流程 |
 
 **智能依赖检测**：
-- 自动检测Java环境和版本
-- 智能查找CSV数据文件
-- 渐进式Python库检测
-- 自动创建结果目录
-Java JDK 11+ (推荐Java 17+)
+- 自动检测 Java 环境与版本（要求 **JDK 17+**）
+- 智能查找 CSV 数据文件（`result/` 或当前目录）
+- 渐进式 Python 库检测（pandas / seaborn 缺失时自动降级）
+- 自动创建 `classes/` 与 `result/` 目录
 
-Make (Windows可选，有build.bat替代)
+命令行补充说明：`make verify` = 编译 + 库自检 + 单元测试 + 快速实验；
+`make run-quick` = 5 用例 × 20 任务冒烟实验（`--no-viz`）。
 
-# Python环境（用于可视化）
-Python 3.7+
-```
-
-#### Java库依赖（已包含在lib/目录）
+#### Java库依赖（已包含在 `lib/` 目录）
 
 ```text
 lib/
-├── commons-math3-3.6.1.jar      # Apache数学计算库 - 统计分析
-├── guava-29.0-jre.jar           # Google核心库 - 集合和工具
-├── jackson-core-2.18.2.jar      # JSON处理库 - 数据序列化
-├── jackson-databind-2.18.2.jar  # JSON数据绑定
-├── jackson-annotations-2.18.2.jar # JSON注解支持
-├── jgrapht-core-1.5.1.jar       # 图算法库 - DAG处理
-├── fastutil-8.5.2.jar           # 高性能集合库
-├── commons-lang3-3.9.jar        # Apache通用工具
-└── slf4j-api-1.7.30.jar         # 日志框架API
+└── commons-math3-3.6.1.jar      # Apache 数学计算库（唯一运行时依赖，约 2.2 MB）
 ```
+
+> 早期版本曾随仓库携带 30 个 JAR（约 77 MB），其中 29 个经 `jdeps` + 源码 `import`
+> 双重审计确认**零引用**，已移除（体积 77 MB → 2.2 MB，实验输出逐位一致）。
+> 审计过程与清单见 [`../docs/DEPENDENCIES.md`](../docs/DEPENDENCIES.md)。
 
 #### Python可视化依赖（自动安装）
 
@@ -411,43 +413,45 @@ make lib-test
 ### 目录结构树
 
 ```
-Yat-CAShed/
-├── 📁 allocation/              # 调度算法模块
-│   ├── AllocationMethods.java     # 算法基类
-│   ├── OnlineWFD.java             # WFD算法实现
-│   └── OnlineCacheAware.java      # Cache-Aware算法实现
-├── 📁 analyzer/                # 性能分析模块
-│   └── PerformanceAnalyzer.java   # 性能指标计算和分析
-├── 📁 entity/                  # 核心实体模块
-│   ├── Node.java                  # 任务节点定义
-│   └── RecencyProfileReal.java    # 缓存行为建模
-├── 📁 generator/               # 任务生成模块
-│   ├── EnhancedTaskGenerator.java # 增强任务生成器
-│   ├── CacheHierarchy.java       # 缓存层次建模
-│   └── UUnifastDiscard.java      # 均匀分布任务生成
-├── 📁 parameters/              # 系统参数模块
-│   └── SystemParameters.java     # 全局配置参数
-├── 📁 visualizer/              # 可视化模块
-│   ├── ResultVisualizer.java     # Java可视化器
-│   ├── simple_visualize_results.py # Python简化可视化
-│   ├── visualize_results.py      # Python完整可视化
-│   ├── requirements.txt          # Python依赖
-│   └── 📁 result/                # 结果输出目录
-├── 📁 lib/                     # 第三方库目录
-├── 📁 classes/                 # 编译输出目录
-├── EnhancedComparisonExperiment.java # 主实验程序
-├── LibraryVerification.java    # 库依赖验证
-├── QuickVerificationTest.java  # 快速验证测试
-├── Makefile                    # Unix构建脚本
-├── build.bat                   # Windows构建脚本
-└── Simulator.md               # 项目说明文档
+simulator/
+├── 📁 allocation/                 # 调度算法模块
+│   ├── AllocationMethods.java        # 算法抽象基类
+│   ├── WFD.java                      # WFD（Worst Fit Decreasing）实现
+│   ├── CacheAware_v1.java            # 缓存感知算法 v1（历史版本）
+│   └── CacheAware_v2.java            # 缓存感知算法 v2（当前主线）
+├── 📁 analyzer/                   # 性能分析模块
+│   └── PerformanceAnalyzer.java      # 6 类指标计算与对比报告
+├── 📁 entity/                     # 核心实体模块
+│   ├── Node.java                     # 任务节点定义
+│   └── RecencyProfileReal.java       # CRP 缓存行为建模（L1/L2/L3/内存）
+├── 📁 generator/                  # 任务生成模块
+│   ├── EnhancedTaskGenerator.java    # 增强任务生成器
+│   ├── CacheHierarchy.java           # 缓存层次建模
+│   └── UUnifastDiscard.java          # UUniFast 利用率分配
+├── 📁 parameters/                 # 系统参数模块
+│   └── SystemParameters.java         # 全局配置参数
+├── 📁 visualizer/                 # 可视化模块
+│   ├── ResultVisualizer.java         # Java 侧汇总与改进率输出
+│   ├── visualize.py                  # Python 图表生成（matplotlib/numpy）
+│   └── requirements.txt              # Python 依赖
+├── 📁 tests/                      # 单元测试（零依赖，无需 JUnit）
+│   └── YatSimulatorTest.java         # 58 条断言
+├── 📁 lib/                        # 第三方库（仅 commons-math3）
+├── 📁 classes/                    # 编译输出（git 忽略）
+├── 📁 result/                     # 实验结果与图表（git 忽略）
+├── AlgorithmComparisonExperiment.java # 主实验入口
+├── LibraryVerification.java       # 库依赖自检
+├── Makefile                       # 跨平台 GNU Make（Linux/macOS/Windows）
+├── build.bat                      # Windows 原生 cmd 入口（行为等价）
+├── .gitignore
+└── Simulator.md                   # 本文档（设计说明与实验解读）
 ```
 
 ### 模块依赖关系图
 
 ```mermaid
 graph TD
-    A[EnhancedComparisonExperiment] --> B[allocation/*]
+    A[AlgorithmComparisonExperiment] --> B[allocation/*]
     A --> C[analyzer/PerformanceAnalyzer]
     A --> D[generator/EnhancedTaskGenerator]
     A --> E[visualizer/ResultVisualizer]
@@ -686,27 +690,27 @@ private static class CacheState {
 }
 ```
 
-#### 算法优势与创新点
+#### 算法特点（据实）
 
-- ✅ **多层次缓存建模**：精确建模L1/L2/L3缓存层次结构
-- ✅ **动态状态跟踪**：实时跟踪和更新处理器缓存状态
-- ✅ **智能权重分配**：基于实验优化的权重分配策略
-- ✅ **自适应优化**：根据系统状态动态调整调度策略
-- ✅ **保守收益建模**：避免过度优化，确保稳定性能提升
+- ✅ **缓存层级建模**：由 [`SharedCacheModel`](entity/SharedCacheModel.java#L120) 统一决策 L1/L2/L3/内存
+- ✅ **状态跟踪**：[`updateProcessorState()`](allocation/CacheAware_v2.java#L247) 记录每核最近任务序列
+- ✅ **固定权重**：四项评分的系数是常量，**没有**在线自适应
+- ➖ **收益有限**：公平口径下 Makespan 差异不显著，见 §4.5
 
 ### 算法对比分析
 
-| 特性                 | WFD算法     | CacheAware_v2算法 |
-| -------------------- | ----------- | ----------------- |
-| **时间复杂度** | O(n×m)     | O(n×m)           |
-| **空间复杂度** | O(m)        | O(m×k)           |
-| **缓存感知**   | ❌ 无       | ✅ 完全支持       |
-| **负载均衡**   | ✅ 良好     | ✅ 优秀           |
-| **状态跟踪**   | ❌ 简单负载 | ✅ 详细缓存状态   |
-| **自适应能力** | ❌ 静态策略 | ✅ 动态调整       |
-| **适用场景**   | 通用任务    | 缓存敏感任务      |
-| **实现复杂度** | 简单        | 中等              |
-| **性能提升**   | 基准        | +15~25%           |
+| 特性 | WFD 算法 | CacheAware_v2 算法 |
+| --- | --- | --- |
+| **时间复杂度** | O(n×m) | O(n×m) |
+| **空间复杂度** | O(m) | O(m×k) |
+| **缓存感知** | ❌ 无 | ✅ 有（DAG 局部性窗口） |
+| **负载均衡** | ✅ 良好 | ✅ 良好（实测 0.8650 → 0.8692） |
+| **状态跟踪** | ❌ 仅负载累加 | ✅ 每核最近任务序列 |
+| **自适应能力** | ❌ 静态 | ❌ 静态（权重为常量） |
+| **适用场景** | 通用任务 | 缓存敏感任务 |
+| **实现复杂度** | 简单 | 中等 |
+| **性能提升（公平口径）** | 基准 | **−0.39%（配对均值），CI ±1.51% 跨 0** |
+| **性能提升（旧口径，不可引用）** | 基准 | +11.66%（模型人为放大） |
 
 其中：n=任务数量，m=处理器数量，k=缓存状态参数数量
 
@@ -747,8 +751,8 @@ SystemParameters.cc_weights = new double[]{0.4, 0.3, 0.2, 0.1};
 SystemParameters.cacheLevel = 3;
 SystemParameters.Level2CoreNum = 2;
 
-// 初始化调度器
-OnlineCacheAware scheduler = new OnlineCacheAware();
+// 初始化调度器（当前主线实现）
+CacheAware_v2 scheduler = new CacheAware_v2();
 ```
 
 #### 第2步：参数配置
@@ -971,82 +975,70 @@ private double calculateMakespan(List<Node> tasks, int processorCount) {
 
 **定义**：缓存访问成功的比例，直接反映缓存优化效果。
 
-**分算法计算方法**：
+> **⚠️ 公平基线 C1 起（当前默认口径）**：命中率**不再按算法名分派估算公式**。
+> 两种算法的命中率都由同一个 [`SharedCacheModel`](entity/SharedCacheModel.java)
+> 在执行任务时写入 `Node.actualCacheHitRatio`，分析器直接读取实测值。
+> 下文的"分算法计算"仅作为**历史口径（`--legacy-metrics`）**保留，用于逐位复现旧结果。
 
-##### WFD算法缓存命中率计算
+##### 实测口径（公平，默认）
+
+```java
+// PerformanceAnalyzer：优先取实测值，与算法名无关
+private double calculateCacheHitRatio(List<Node> tasks, String algorithmName) {
+    double measured = calculateMeasuredCacheHitRatio(tasks);
+    if (!Double.isNaN(measured)) return measured;   // ← 公平基线走这里
+    if (legacyMetrics) return estimateCacheHitRatioLegacy(tasks, algorithmName);
+    return calculateBasicCacheHitRatio(tasks);
+}
+```
+
+```java
+// SharedCacheModel：层级命中 → 命中份额
+static double weightedHitRatio(Node task, int level) {
+    double[] w = normalizedWeights(task);   // w[0..3] = L1/L2/L3/Mem 归一化权重
+    double hits;
+    switch (level) {
+        case 1:  hits = 3*w[0] + 2*w[1] + 1*w[2]; break;  // L1 命中 ⇒ L2/L3 也命中
+        case 2:  hits = 1*w[0] + 2*w[1] + 1*w[2]; break;  // L1 miss，L2/L3 命中
+        case 3:  hits = 0*w[0] + 0*w[1] + 1*w[2]; break;  // 仅 L3 命中
+        default: hits = 0.0;                              // 内存访问
+    }
+    return hits;   // 除以权重和由调用方完成
+}
+```
+
+层级判定见 `SharedCacheModel.resolveCacheLevel()`：每个处理器、每个缓存层级各保留最近 **5** 条访问历史；
+若该处理器最近访问过**同 `dagID`** 的任务，则命中对应层级，否则退化为内存访问（×1.2）。
+
+##### 旧口径：WFD 估算（仅 `--legacy-metrics`）
 
 ```java
 private double calculateWFDCacheHitRatio(List<Node> tasks) {
-    double totalCacheAccess = 0;
-    double cacheHits = 0;
-  
-    for (Node task : tasks) {
-        if (task.weights != null && task.weights.length >= 4) {
-            // WFD算法基础命中率计算（不考虑缓存优化）
-            double l1BaseHit = task.weights[0] * 0.6;  // L1基础命中率60%
-            double l2BaseHit = task.weights[1] * 0.4;  // L2基础命中率40%
-            double l3BaseHit = task.weights[2] * 0.3;  // L3基础命中率30%
-          
-            // 任务敏感度对命中率的影响（较小）
-            double sensitivityFactor = 1.0 + task.sensitivity * 0.1;
-          
-            double taskHitRatio = (l1BaseHit + l2BaseHit + l3BaseHit) * sensitivityFactor;
-            cacheHits += Math.min(taskHitRatio, 1.0);
-            totalCacheAccess += 1.0;
-        }
-    }
-  
-    return totalCacheAccess > 0 ? cacheHits / totalCacheAccess : 0.5;
+    // ... 权重公式估算 ...
+    double taskHitRatio = (l1BaseHit + l2BaseHit + l3BaseHit) * sensitivityFactor;
+    cacheHits += Math.min(taskHitRatio, 1.0);
+    // 最终截断在 [0.30, 0.70] —— 这是强制区间，直接制造了与 CacheAware 的差距
+    return Math.max(0.3, Math.min(result, 0.7));
 }
 ```
 
-##### CacheAware算法缓存命中率计算
-
-```java
-private double calculateCacheAwareCacheHitRatio(List<Node> tasks) {
-    // 使用实际记录的缓存命中率数据
-    return CacheAware_v2.getOverallCacheHitRatio();
-}
-
-// CacheAware_v2类中的实际计算
-public static double getOverallCacheHitRatio() {
-    if (cacheStats.isEmpty()) return 0.0;
-  
-    double totalHits = 0;
-    double totalAccesses = 0;
-  
-    for (CacheStats stats : cacheStats.values()) {
-        totalHits += stats.getTotalHits();
-        totalAccesses += stats.getTotalAccesses();
-    }
-  
-    return totalAccesses > 0 ? totalHits / totalAccesses : 0.0;
-}
-```
-
-**CacheAware任务缓存命中率记录**：
+##### 旧口径：CacheAware 自估（仅 `--legacy-metrics`）
 
 ```java
 private void recordTaskCacheHitRatio(int processorId, Node task) {
     CacheState cacheState = cacheStates.get(processorId);
-  
-    // 计算实际缓存命中率
     double l1HitRatio = Math.max(0, task.weights[0] * (1.0 - cacheState.l1Utilization * 0.8));
-    double l2HitRatio = Math.max(0, task.weights[1] * (1.0 - cacheState.l2Utilization * 0.6));
-    double l3HitRatio = Math.max(0, task.weights[2] * (1.0 - cacheState.l3Utilization * 0.4));
-  
-    // 综合命中率
-    double overallHitRatio = (l1HitRatio * 0.5 + l2HitRatio * 0.3 + l3HitRatio * 0.2) * 
-                            (1.0 + task.sensitivity * 0.2);
-  
-    // 记录到任务对象
-    task.actualCacheHitRatio = Math.min(overallHitRatio, 1.0);
-  
-    // 更新全局统计
-    CacheStats stats = cacheStats.computeIfAbsent(processorId, k -> new CacheStats());
-    stats.recordAccess(l1HitRatio, l2HitRatio, l3HitRatio);
+    // ...
+    // 仅在 legacyWriteBack = true 时才写回任务（C1 默认关闭）
+    if (legacyWriteBack) {
+        task.actualCacheHitRatio = stats.totalHits / stats.totalAccesses;
+    }
 }
 ```
+
+> **为什么这样改**：旧口径下 WFD 被硬截断在 [0.30, 0.70]，而 CacheAware 读取自己的解析估计，
+> 命中率差距**部分由度量方式制造**。改造后 30.21pp 的差距收缩为 0.82pp，
+> 详见 [`docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md) §3.6 与 §4。
 
 #### 3. 负载均衡度（Load Balance）
 
@@ -1251,277 +1243,282 @@ public double calculateOverallPerformanceScore(ExperimentResult result) {
 
 ### 统计显著性验证
 
-**置信区间计算**：
+**置信区间计算**（实现见 [`AlgorithmComparisonExperiment.printAggregate()`](AlgorithmComparisonExperiment.java#L298) 与 [`tCritical95()`](AlgorithmComparisonExperiment.java#L260)）：
 
 ```java
-public ConfidenceInterval calculateConfidenceInterval(List<Double> values, double confidence) {
-    double mean = values.stream().mapToDouble(d -> d).average().orElse(0.0);
-    double variance = values.stream().mapToDouble(d -> Math.pow(d - mean, 2)).sum() / (values.size() - 1);
-    double stdError = Math.sqrt(variance / values.size());
-  
-    // t分布临界值（假设大样本，使用1.96近似）
-    double tValue = 1.96; // 95%置信度
-    if (confidence == 0.99) tValue = 2.576; // 99%置信度
-  
-    double margin = tValue * stdError;
-    return new ConfidenceInterval(mean - margin, mean + margin, mean);
+/** 95% 双侧临界值。n 小时必须用 t 分布，不能用 1.96。 */
+static double tCritical95(int n) {
+    switch (n - 1) {          // 自由度
+        case 4:  return 2.776; // n=5  ← 本项目多种子使用的档位
+        case 9:  return 2.262; // n=10
+        case 29: return 2.045;
+        default: return 1.96;  // 大样本退回正态近似
+    }
+}
+
+static double[] confidenceInterval(double[] xs) {
+    int n = xs.length;
+    double mean = 0; for (double x : xs) mean += x; mean /= n;
+    double var = 0;
+    if (n > 1) { for (double x : xs) var += (x - mean) * (x - mean); var /= (n - 1); }
+    double sd   = Math.sqrt(var);
+    double t    = tCritical95(n);
+    double half = t * sd / Math.sqrt(n);
+    return new double[]{ mean - half, mean + half, mean };
 }
 ```
+
+> **为什么不能用 1.96**：n=5 时 `t(0.975,4)=2.776` 是 1.96 的 **1.42 倍**。
+> 用 1.96 会把区间低估约 29%，足以把「不显著」误报成「显著」。
+> 早期版本确实用了 1.96，已改为查表，见 [`CHANGELOG.md`](../CHANGELOG.md)。
 
 这些详细的计算方法确保了性能评估的科学性和准确性，为算法比较提供了可靠的量化依据。
 
 ---
 
-## 📈 性能优化成果
+## 📈 性能结果（公平基线 C1，默认口径）
 
-基于100个独立测试案例的大规模实验结果，CacheAware_v2算法在多个关键性能指标上显著优于WFD基准算法。
+> **⚠️ 公平基线说明（C1，必读）**
+>
+> 本节所有数字均来自 **公平基线（C1）**：WFD 与 CacheAware_v2 **共用同一个 [`SharedCacheModel`](entity/SharedCacheModel.java#L39)** 决定任务的缓存层级与实际执行时间，命中率由模型**实测**写入任务后统计，**不再按算法名分派估算公式**。
+>
+> 本节早期版本曾列出一组 `1,245,678 ns → 987,654 ns / ↓20.7% / p<0.001` 的"成果"。那组数字**无法由当前代码复现**，是旧口径（算法各自估算 ET + 名字分派命中率）下叠加人工整理的结果，**已删除**，仅作为历史在 §"旧口径历史数据（仅审计）"中留档。请不要在任何对外材料中引用那组数字。
+>
+> 复现方式见 [`docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md) §8。
 
-#### 综合性能对比
+#### 综合性能对比（seed=42，100 用例，每例 60 任务）
 
-| 性能指标               | WFD算法      | CacheAware_v2算法 | 改进幅度           | 统计显著性 |
-| ---------------------- | ------------ | ----------------- | ------------------ | ---------- |
-| **平均Makespan** | 1,245,678 ns | 987,654 ns        | **↓ 20.7%** | p < 0.001  |
-| **缓存命中率**   | 64.2%        | 82.5%             | **↑ 28.5%** | p < 0.001  |
-| **负载均衡度**   | 0.736        | 0.891             | **↑ 21.1%** | p < 0.001  |
-| **CPU利用率**    | 0.823        | 0.897             | **↑ 9.0%**  | p < 0.01   |
-| **能耗效率**     | 2,145.6 J    | 1,678.3 J         | **↓ 21.8%** | p < 0.001  |
-| **响应时间**     | 24,567 ns    | 19,234 ns         | **↓ 21.7%** | p < 0.001  |
+| 性能指标 | WFD | CacheAware_v2 | 差异（CA 相对 WFD） | 判定 |
+| --- | --- | --- | --- | --- |
+| **平均 Makespan** | 177,686.2 ns | 176,436.8 ns | −0.70%（比值）／−0.39%（配对均值） | ➖ 不显著（CI 跨 0） |
+| **Makespan 标准差** | 47,020.4 | 46,735.1 | −0.61% | ➖ |
+| **缓存命中率** | 18.08% | 18.90% | **+0.82 pp** | ➖ 方向正确但量级极小 |
+| **总执行时间 TET** | 1,144,965.6 ns | 1,143,921.0 ns | −0.09% | ➖ |
+| **平均任务执行时间** | 19,082.8 ns | 19,065.4 ns | −0.09% | ➖ |
+| **平均响应时间** | 78,511.8 ns | 79,662.9 ns | **+1.47%（更差）** | ❌ |
+| **CPU 利用率** | 0.8157 | 0.8195 | +0.0047 | ➖ |
+| **负载均衡度** | 0.8650 | 0.8692 | +0.0049 | ➖ |
+| **Makespan 胜场（100 例）** | 44 | **56** | 56.0% | ➖ 与 50% 不可区分 |
+
+**多种子（`--seeds=42,43,44,45,46`）稳健性：**
+
+| 指标 | 均值 | 样本 SD | 95% CI（t=2.776） | 5 个种子取值 |
+| --- | --- | --- | --- | --- |
+| Makespan 改进 | **−0.954%** | 1.406 | **±1.745** | [−1.54, −1.58, +1.53, −1.91, −1.27] |
+| 命中率提升 | +0.377 pp | 0.272 | ±0.338 | [+0.63, +0.35, −0.03, +0.30, +0.63] |
+| CacheAware 胜率 | 48.6% | 5.771 | ±7.164 | [46, 43, 57, 45, 52] |
+
+> 早期版本此处用 `1.96·sd/√n`，得到 ±1.233 / ±0.238 / ±5.058。n=5 应取
+> `t(0.975,4)=2.776`，已更正为 ±1.745 / ±0.338 / ±7.164。**结论方向不变**
+> （Makespan CI 仍跨 0、胜率区间仍覆盖 50%），但「边际显著」的说法不再成立。
+
+点估计为负、置信区间跨 0、胜率与 50% 不可区分 —— **在公平模型下无法宣称 CacheAware_v2 具有可观测的 Makespan 优势**。详细论证见 [`docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md) §4.1、§4.5。
 
 #### 详细性能分析
 
-##### 1. Makespan优化效果
+#### 详细性能分析
+
+##### 1. Makespan 逐用例分布（100 例，配对统计）
 
 ```
-Makespan改进分布分析：
+CacheAware_v2 相对 WFD 的 Makespan 变化（正数 = CacheAware 更快）：
 ┌────────────────┬──────────┬──────────┬────────────┐
 │   改进幅度     │  案例数  │   比例   │  累计比例  │
 ├────────────────┼──────────┼──────────┼────────────┤
-│  > 30%改进     │    15    │  15.0%   │   15.0%    │
-│ 20-30%改进     │    28    │  28.0%   │   43.0%    │
-│ 10-20%改进     │    35    │  35.0%   │   78.0%    │
-│  5-10%改进     │    16    │  16.0%   │   94.0%    │
-│  0-5%改进      │     4    │   4.0%   │   98.0%    │
-│    性能劣化    │     2    │   2.0%   │  100.0%    │
+│  > +10% 更好   │     8    │   8.0%   │    8.0%    │
+│  +5% ~ +10%    │    12    │  12.0%   │   20.0%    │
+│  +0% ~ +5%     │    36    │  36.0%   │   56.0%    │
+│  −5% ~  0%     │    23    │  23.0%   │   79.0%    │
+│ −10% ~ −5%     │    13    │  13.0%   │   92.0%    │
+│  < −10% 更差   │     8    │   8.0%   │  100.0%    │
 └────────────────┴──────────┴──────────┴────────────┘
 
-平均改进: 20.7% ± 8.3% (95%置信区间: [18.1%, 23.3%])
+配对均值: +0.39%（中位数 +1.34%，SD 7.70%）
+95% 置信区间: ±1.51%  →  跨 0，不显著
+|Δ| > 5% 的用例: 60 / 100；|Δ| > 10% 的用例: 21 / 100
+极端用例：最好 +16.49%（case 80, U=1.2），最差 −20.98%（case 95, U=1.5）
 ```
 
-##### 2. 缓存命中率提升分析
+**读法**：分布基本围绕 0 对称，胜场 56 / 负场 44，与抛硬币不可区分；"很多用例差距 >5%"不代表算法有效，而是**方差很大**（同一算法不同用例的 makespan 本身就在 12 万~26 万 ns 量级波动）。
+
+##### 2. 缓存层级分布（公平模型实测）
 
 ```
-缓存层次命中率对比：
+任务最终落在哪个缓存层级（每个算法 60 任务 × 100 用例的代表性样本）：
+┌──────────────┬──────────┬──────────────┬────────────────────┐
+│  缓存层级    │   WFD    │ CacheAware_v2 │  说明              │
+├──────────────┼──────────┼──────────────┼────────────────────┤
+│  L1（×0.80） │    0     │      2       │ 独占一核，历史最近 │
+│  L2（×0.90） │   10     │      6       │ 同 L2 组内复用     │
+│  L3（×0.95） │   38     │     40       │ 全芯片共享         │
+│  内存（×1.20）│   12     │     12       │ 窗口内无复用       │
+├──────────────┼──────────┼──────────────┼────────────────────┤
+│ 平均命中率   │ 18.91%   │   20.40%     │ +1.49 pp（单样本） │
+│ ΣET / Σbase  │ 0.9845   │   0.9861     │ 反而略差 0.16%     │
+│ 同 DAG 同核  │    1     │      6       │ 局部性确实改善     │
+└──────────────┴──────────┴──────────────┴────────────────────┘
+```
+
+**关键结论**：CacheAware 确实把同 DAG 任务更多聚到同一核（1 → 6 次相邻命中），命中率也真的更高；但 **40/60 的任务无论怎么调度都落在 L3（×0.95）**，可优化空间只有 5%，而"把任务堆到同一核"带来的排队延迟足以抵消这 5%。这是收益消失的根因，详见 [`docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md) §4.5。
+
+##### 3. 负载均衡度
+
+```
+公平口径下两者几乎相同：
 ┌──────────────┬──────────┬──────────────┬──────────┐
-│  缓存层级    │   WFD    │ CacheAware_v2 │  改进率  │
+│   算法       │ 负载均衡度│  CPU 利用率  │ 说明     │
 ├──────────────┼──────────┼──────────────┼──────────┤
-│  L1缓存      │  78.3%   │    91.2%     │ +16.5%   │
-│  L2缓存      │  62.1%   │    79.8%     │ +28.5%   │
-│  L3缓存      │  45.6%   │    67.9%     │ +48.9%   │
-│  综合命中率  │  64.2%   │    82.5%     │ +28.5%   │
+│     WFD      │  0.8650  │    0.8157    │ 基准     │
+│ CacheAware_v2│  0.8692  │    0.8195    │ +0.0049  │
 └──────────────┴──────────┴──────────────┴──────────┘
 ```
 
-##### 3. 负载均衡度改善
+CacheAware_v2 内部对负载均衡项给了权重，但**任务落点由缓存亲和决定后，负载项只剩微调作用**，因此均衡度只提升 0.005，不构成可宣称的优势。
 
-```
-处理器负载分布标准差：
-┌──────────────┬──────────┬──────────────┬──────────┐
-│   算法       │ 平均标准差│  归一化变异   │ 均衡评分 │
-├──────────────┼──────────┼──────────────┼──────────┤
-│     WFD      │  156.2   │    0.264     │  0.736   │
-│ CacheAware_v2│   89.7   │    0.109     │  0.891   │
-│   改进幅度   │  -42.6%  │   -58.7%     │ +21.1%   │
-└──────────────┴──────────┴──────────────┴──────────┘
-```
-
-### 不同工作负载下的性能表现
+### 不同工作负载下的性能表现（公平口径）
 
 #### 负载级别详细分析
 
-##### 低负载环境 (利用率 0.4-0.6)
+##### 低负载环境（利用率 0.6）
 
 ```
-低负载性能表现：
-┌─────────────────┬──────────┬──────────────┬──────────┐
-│    性能指标     │   WFD    │ CacheAware_v2 │ 改进幅度 │
-├─────────────────┼──────────┼──────────────┼──────────┤
-│ Makespan (ms)   │  892.3   │    754.1     │ -15.5%   │
-│ 缓存命中率      │  67.8%   │    83.2%     │ +22.7%   │
-│ 负载均衡度      │  0.789   │    0.876     │ +11.0%   │
-│ CPU利用率       │  0.734   │    0.812     │ +10.6%   │
-└─────────────────┴──────────┴──────────────┴──────────┘
+┌─────────────────┬────────────┬──────────────┬──────────┐
+│    性能指标     │    WFD     │ CacheAware_v2│  Δ       │
+├─────────────────┼────────────┼──────────────┼──────────┤
+│ Makespan (ns)   │  119,381   │   120,272    │  −0.90%  │
+│ 缓存命中率      │  15.58%    │   18.40%     │  +2.82 pp│
+│ Makespan 胜场   │  —         │   9 / 20     │  —       │
+└─────────────────┴────────────┴──────────────┴──────────┘
 
-特点分析：
-✓ 缓存优化效果明显，任务间竞争较少
-✓ 负载均衡改善有限，因为总体负载较轻
-✓ 主要收益来源：L1/L2缓存命中率提升
+特点：负载轻，缓存亲和有空间施展，命中率提升最大（+2.82 pp），
+      但 makespan 仍略差 —— 说明"多命中 2.8 pp"换不来时间。
 ```
 
-##### 中负载环境 (利用率 0.8-1.0)
+##### 中负载环境（利用率 0.8）
 
 ```
-中负载性能表现：
-┌─────────────────┬──────────┬──────────────┬──────────┐
-│    性能指标     │   WFD    │ CacheAware_v2 │ 改进幅度 │
-├─────────────────┼──────────┼──────────────┼──────────┤
-│ Makespan (ms)   │ 1,234.5  │    956.8     │ -22.5%   │
-│ 缓存命中率      │  63.1%   │    84.7%     │ +34.2%   │
-│ 负载均衡度      │  0.698   │    0.923     │ +32.2%   │
-│ CPU利用率       │  0.856   │    0.934     │ +9.1%    │
-└─────────────────┴──────────┴──────────────┴──────────┘
+┌─────────────────┬────────────┬──────────────┬──────────┐
+│    性能指标     │    WFD     │ CacheAware_v2│  Δ       │
+├─────────────────┼────────────┼──────────────┼──────────┤
+│ Makespan (ns)   │  145,694   │   142,028    │  +2.11%  │
+│ 缓存命中率      │  16.55%    │   18.43%     │  +1.89 pp│
+│ Makespan 胜场   │  —         │   13 / 20    │  —       │
+└─────────────────┴────────────┴──────────────┴──────────┘
 
-特点分析：
-✓ 最佳性能提升区间，多因子优化协同作用
-✓ 缓存感知和负载均衡双重收益
-✓ 智能调度决策发挥最大效用
+特点：这是全表唯一有明显正收益的点（+2.11%），但仍在噪声范围内
+      （配对 CI ±1.5% 量级，且 5 种子均值转负）。
 ```
 
-##### 高负载环境 (利用率 1.2-2.0)
+##### 高负载环境（利用率 1.5）
 
 ```
-高负载性能表现：
-┌─────────────────┬──────────┬──────────────┬──────────┐
-│    性能指标     │   WFD    │ CacheAware_v2 │ 改进幅度 │
-├─────────────────┼──────────┼──────────────┼──────────┤
-│ Makespan (ms)   │ 1,892.7  │  1,541.2     │ -18.6%   │
-│ 缓存命中率      │  59.4%   │    78.9%     │ +32.8%   │
-│ 负载均衡度      │  0.721   │    0.867     │ +20.2%   │
-│ CPU利用率       │  0.945   │    0.967     │ +2.3%    │
-└─────────────────┴──────────┴──────────────┴──────────┘
+┌─────────────────┬────────────┬──────────────┬──────────┐
+│    性能指标     │    WFD     │ CacheAware_v2│  Δ       │
+├─────────────────┼────────────┼──────────────┼──────────┤
+│ Makespan (ns)   │  240,243   │   241,310    │  −0.81%  │
+│ 缓存命中率      │  21.08%    │   20.18%     │  −0.91 pp│
+│ Makespan 胜场   │  —         │   10 / 20    │  —       │
+└─────────────────┴────────────┴──────────────┴──────────┘
 
-特点分析：
-✓ 高竞争环境下仍保持显著优势
-✓ 缓存干扰增加但优化策略有效
-✓ 智能权重调整机制发挥关键作用
+特点：高竞争下把任务聚到同核会显著拉长关键路径，命中率甚至反超为负。
 ```
-
-### 统计显著性验证
 
 #### 实验设计严格性
 
-- **样本规模**：100个独立测试案例
-- **置信水平**：95%置信区间
-- **假设检验**：双侧t检验
-- **效应量**：Cohen's d > 0.8（大效应）
+- **样本规模**：100 个独立测试案例 × 每例 60 任务；另做 5 种子（42–46）稳健性检验
+- **置信水平**：95%，半宽 = `t(0.975, n−1) · SD/√n`
+  - n=100 时 t≈1.984（≈1.96）；n=5 时 t=2.776，是 1.96 的 1.42 倍
+  - 早期版本一律用 1.96，导致 n=5 的区间被低估约 29%，已修正（见 [`CHANGELOG.md`](../CHANGELOG.md)）
+  - 修正后结论方向不变（Makespan/胜率 CI 跨 0），但命中率区间 [+0.04, +0.72] pp 仅为勉强不含 0
+- **检验方式**：逐用例**配对**比较（同一任务集、同一随机种子）＋ 比值均值；不以"先各自求均值再比"作为结论依据
+- **效应量**：配对差分的 SD 为 7.70%，远超均值 0.39%，即效应量极小
 
 #### 关键指标的统计验证
 
 ```java
-// Makespan改进的统计显著性检验
-public StatisticalResult validateMakespanImprovement() {
-    List<Double> wfdMakespans = getWFDMakespans();
-    List<Double> cacheMakespans = getCacheAwareMakespans();
-  
-    // 配对t检验
-    double tStatistic = calculatePairedTTest(wfdMakespans, cacheMakespans);
-    double pValue = calculatePValue(tStatistic, wfdMakespans.size() - 1);
-    double effectSize = calculateCohenD(wfdMakespans, cacheMakespans);
-  
-    return new StatisticalResult(tStatistic, pValue, effectSize);
+// 公平基线的正确检验姿势：先配对求差，再对差值做区间估计
+double[] diffs = new double[n];
+for (int i = 0; i < n; i++) {
+    diffs[i] = (wfd[i] - cache[i]) / wfd[i];   // 同一 case 的配对差分
 }
+double mean = mean(diffs);
+double sd   = sampleSd(diffs);                 // 分母 n-1
+double ci   = 2.776 * sd / Math.sqrt(n);       // n=5 用 t(0.975, 4)
+// 注：n=100 的配对统计用 t(0.975,99)=1.984（≈1.96）
 
-// 结果示例：
-// t = 12.47, p < 0.001, Cohen's d = 1.23 (大效应)
+// 公平口径实测（seed 42，n=100）：mean = +0.39%，sd = 7.70%，CI = ±1.51%
+// → CI 跨 0，不能拒绝"两算法无差异"
+//
+// 多种子（n=5，seeds 42..46）：mean = −0.954%，sd = 1.406%，CI = ±1.745%（t=2.776）
+// → 点估计为负且 CI 跨 0
 ```
 
-### 创新技术亮点详解
+### 旧口径历史数据（仅审计，不可作为结论）
 
-#### 1. 多因子加权评分模型创新
+以下是在改造前（`--legacy-metrics` 可逐位复现）的口径下得到的数字。当年报告里出现的 `↓20.7% / ↑28.5% / p<0.001` 等即源于此。其不公平之处在于：
 
-**传统方法问题**：
+1. CacheAware 会把自己算出的"增强 ET"写回 `task.expectedET`，WFD 不会 —— 两者比的不再是同一任务集；
+2. 命中率按**算法名**分派两套估算公式，WFD 的公式被 clamp 在 `[0.30, 0.70]`；
+3. WFD 的负载数组硬编码为 `int[8]`，多于 8 核时统计失真；
+4. 缓存密集任务生成器把 `dagID` 硬编码为 0，导致"同 DAG"判断对两算法都永远为真。
 
-- 单一因子优化，容易陷入局部最优
-- 静态权重分配，无法适应动态环境
-- 忽略因子间相互作用
+这四点修复后，旧数字不再复现，因此**已从本节删除**，只保留在 §3.6 的改造前后对照表里作为历史证据：
 
-**CacheAware_v2创新**：
+| 指标 | 旧口径 | 公平口径 |
+| --- | --- | --- |
+| Makespan 改进 | 11.66% | 0.39% |
+| CacheAware Makespan | 155,059 ns | 176,437 ns |
+| WFD Makespan | 176,044 ns | 177,686 ns |
+| 命中率提升 | +30.21 pp | +0.82 pp |
+| CacheAware 胜率 | 96.0% | 56.0% |
+
+复现旧口径：`java -cp "lib/*:classes:." AlgorithmComparisonExperiment --legacy-metrics --seed=42`。
+**该命令仅用于审计历史，不应产出任何对外结论。**
+
+### 算法设计要点（与实现对齐）
+
+> **⚠️ 本节为文档订正**：早期版本此处列出的 `adjustWeights()`、`predictCacheUtilization()`、`adaptiveWeightLearning()` 三个"创新机制"**在仓库中并不存在**（全仓 grep 0 命中），属于设计构想被误写成"已实现"。按 [`docs/ROADMAP.md`](../docs/ROADMAP.md) A2「消除声明/实现不一致」的要求，这里改为描述**真实实现**。
+
+#### 1. 多因子加权评分（真实实现）
+
+CacheAware_v2 的四项评分见 [`CacheAware_v2.calculateCacheAwareScore()`](allocation/CacheAware_v2.java#L104)：
+
+| 分项 | 方法 | 作用 |
+| --- | --- | --- |
+| 缓存收益 | [`calculateCacheBenefitScore()`](allocation/CacheAware_v2.java#L144) | 估算放到该核能拿到的缓存层级收益 |
+| 缓存亲和 | [`calculateCacheAffinityScore()`](allocation/CacheAware_v2.java#L176) | 该核最近是否访问过同 DAG 任务 |
+| 缓存质量 | [`calculateCacheQualityScore()`](allocation/CacheAware_v2.java#L202) | 该核缓存当前被污染的程度 |
+| 缓存干扰 | [`calculateCacheInterferenceScore()`](allocation/CacheAware_v2.java#L227) | 新任务对该核已有缓存的影响 |
+| 负载均衡 | [`calculateLoadBalanceScore()`](allocation/CacheAware_v2.java#L240) | 当前负载 + 本任务 ET |
+
+**权重是静态常量**，没有运行时自适应调整 —— 这正是 §4.5 中"收益无法放大"的原因之一。
+
+#### 2. 缓存状态跟踪（真实实现）
+
+[`CacheState`](allocation/CacheAware_v2.java#L45) 只记录**已发生的**事实，不做指数衰减预测：
 
 ```java
-// 动态权重调整机制
-private void adjustWeights(double cacheUtilization, double loadImbalance) {
-    if (cacheUtilization > 0.85) {
-        // 缓存压力大时，增强负载均衡权重
-        cacheWeight *= 0.8;
-        loadBalanceWeight *= 1.3;
-    } else if (loadImbalance > 0.3) {
-        // 负载不均时强化均衡策略
-        loadBalanceWeight *= 1.5;
-        affinityWeight *= 0.9;
-    } else {
-        // 正常情况优化缓存性能
-        cacheWeight *= 1.2;
-        affinityWeight *= 1.1;
-    }
+private static class CacheState {
+    // 每个核上最近执行过的任务序列（用于亲和性判断）
+    // 以及 L1/L2/L3 的累计命中统计
 }
 ```
 
-#### 2. 缓存状态预测模型
+更新入口是 [`updateProcessorState()`](allocation/CacheAware_v2.java#L247)，纯记录、无预测。
 
-**核心创新**：基于历史数据预测缓存状态变化
+#### 3. 能耗指标（真实实现）
 
-```java
-private double predictCacheUtilization(int processorId, Node newTask) {
-    CacheState currentState = cacheStates.get(processorId);
-  
-    // 基于指数衰减模型预测
-    double decayFactor = 0.95;
-    double newUtilization = currentState.l1Utilization * decayFactor + 
-                           newTask.weights[0] * newTask.sensitivity * 0.1;
-  
-    // 考虑缓存替换策略
-    if (newUtilization > 0.9) {
-        newUtilization = 0.9 + (newUtilization - 0.9) * 0.5; // 饱和效应
-    }
-  
-    return newUtilization;
-}
+能耗由 [`PerformanceAnalyzer.calculateEnergyConsumption()`](analyzer/PerformanceAnalyzer.java#L448) 计算，公式基于**任务执行时间**（非硬件功耗采样）：
+
+```
+energy = Σ (task.finishAt − task.start) × 单位功耗系数
 ```
 
-#### 3. 自适应学习机制
+#### 能耗指标实测结果
 
-**学习算法**：
+公平口径（seed=42，100 用例）：由于两者总执行时间差仅 −0.09%，**能耗差同样在 0.1% 量级，不构成"降低 21.8%"**。早期版本写的「平均能耗降低 21.8% / 峰值功耗降低 15.3% / 缓存能效提升 34.7%」既无代码支撑也无实验来源，**已删除**。
 
-```java
-private void adaptiveWeightLearning() {
-    // 基于最近N次分配的效果调整权重
-    double recentPerformance = calculateRecentPerformance();
-    double baselinePerformance = getBaselinePerformance();
-  
-    if (recentPerformance > baselinePerformance * 1.1) {
-        // 性能提升，增强当前策略
-        reinforceCurrentStrategy();
-    } else if (recentPerformance < baselinePerformance * 0.9) {
-        // 性能下降，调整策略
-        adjustStrategy();
-    }
-}
-```
-
-### 能耗优化成果
-
-#### 能耗模型建立
-
-```java
-// 考虑缓存的能耗计算模型
-public double calculateEnergyConsumption(Node task, int processor) {
-    double baseEnergy = task.expectedET * PROCESSOR_POWER;
-  
-    // 缓存命中节省能耗
-    double cacheHitRatio = estimateCacheHitRate(task, processor);
-    double cacheSavings = cacheHitRatio * CACHE_ENERGY_SAVINGS;
-  
-    // 内存访问额外能耗
-    double memoryPenalty = (1 - cacheHitRatio) * MEMORY_ACCESS_PENALTY;
-  
-    return baseEnergy - cacheSavings + memoryPenalty;
-}
-```
-
-#### 能耗优化结果
-
-- **平均能耗降低**：21.8%
-- **峰值功耗降低**：15.3%
-- **缓存能效提升**：34.7%
+> 提醒：本模拟器的"能耗"是由执行时间换算的**派生指标**，任何"能耗优化"结论都只能等价于"执行时间优化"，不存在独立的功耗模型。
 
 ---
 
@@ -1572,64 +1569,30 @@ public class PerformanceMetrics {
 }
 ```
 
-### 技术创新性分析
+### 设计取舍（据实陈述）
 
-#### 1. 缓存感知调度算法创新
+> 本节原列有 `calculateInnovativeScore()`、`adaptiveOptimization()` 与 `adjustWeights(cache, affinity, balance)` 三段"创新代码"，**均不存在于仓库**（grep 0 命中）。按 A2 原则改为陈述真实设计与已知局限。
 
-**传统调度算法问题**：
+#### 1. 缓存感知调度：真实做了什么
 
-- 忽略缓存层次结构影响
-- 仅考虑负载均衡，不考虑数据局部性
-- 缓存命中率低，性能瓶颈明显
+- ✔ **有**：任务级的缓存敏感度 `Node.sensitivity` 与四级权重 `Node.weights[0..3]`（由 [`EnhancedTaskGenerator`](generator/EnhancedTaskGenerator.java#L32) 生成）
+- ✔ **有**：基于 `dagID` 的最近访问窗口（[`RecencyProfileReal`](entity/RecencyProfileReal.java#L27)，窗口长 5）
+- ✔ **有**：四项打分合成（见上文「多因子加权评分（真实实现）」）
+- ✘ **没有**：缓存敏感度的"量化模型"论文级推导；目前 `sensitivity` 是生成器给的随机量
+- ✘ **没有**：权重自学习 / 在线自适应
 
-**Cache-Aware算法创新**：
+#### 2. 评分系统：真实权重是常量
 
-- ✨ **首创**缓存敏感度量化模型
-- ✨ **独创**多级缓存权重分配机制
-- ✨ **原创**动态亲和性调整算法
+实际评分函数见 [`calculateCacheAwareScore()`](allocation/CacheAware_v2.java#L104)，四项按固定系数线性组合，**没有运行时调参**。
 
-#### 2. 智能评分系统设计
+#### 3. 已知局限（对应 §4.5 的实测）
 
-```java
-// 创新的多因子评分模型
-private double calculateInnovativeScore(Node task, int processor) {
-    // 基础评分
-    double baseScore = task.priority * 0.2;
-  
-    // 缓存敏感度评分 (核心创新)
-    double cacheScore = calculateCacheSensitivityScore(task, processor) * 0.4;
-  
-    // 处理器亲和性评分 (亲和性创新)
-    double affinityScore = calculateSmartAffinityScore(task, processor) * 0.3;
-  
-    // 负载均衡评分 (传统因子)
-    double balanceScore = calculateLoadBalanceScore(processor) * 0.1;
-  
-    return baseScore + cacheScore + affinityScore + balanceScore;
-}
-```
+- 缓存层级因子是**人为设定**（L1 0.8 / L2 0.9 / L3 0.95 / 内存 1.2），并非硬件实测
+- 60 任务中约 40 个落在 L3，可优化空间上限仅 5%
+- 亲和性优化会拉长关键路径，在高负载下反噬
+- 因此当前实现在公平模型下**没有可观测的 Makespan 优势**
 
-#### 3. 自适应优化机制
-
-```java
-// 系统状态自适应调整
-public void adaptiveOptimization() {
-    double currentCacheUtilization = monitorCacheUtilization();
-    double currentLoadBalance = calculateLoadBalance();
-  
-    // 动态调整策略权重
-    if (currentCacheUtilization > 0.85) {
-        // 缓存压力大时优先负载均衡
-        adjustWeights(0.2, 0.3, 0.5);  // cache, affinity, balance
-    } else if (currentLoadBalance < 0.7) {
-        // 负载不均时强化均衡策略
-        adjustWeights(0.3, 0.2, 0.5);
-    } else {
-        // 正常情况下优化缓存性能
-        adjustWeights(0.5, 0.3, 0.2);
-    }
-}
-```
+真正的算法创新（如按关键路径加权、按层级收益差做边际决策）属于待做工作，见 [`docs/ROADMAP.md`](../docs/ROADMAP.md) 方向 D。
 
 ### 实际应用价值
 
@@ -1680,29 +1643,24 @@ public class ReproducibilityGuarantee {
 }
 ```
 
-#### 2. 完整的实验配置记录
+#### 2. 完整的实验配置记录（与代码一致）
+
+以下常量直接取自 [`AlgorithmComparisonExperiment`](AlgorithmComparisonExperiment.java#L51)，均为 `private static`，可被命令行参数覆盖：
 
 ```java
-// 详细记录实验配置
-public class ExperimentConfiguration {
-    public static final String CONFIG_VERSION = "v2.1.0";
-    public static final int CORES = 8;
-    public static final int TEST_CASES = 100;
-    public static final int TASKS_PER_CASE = 50;
-    public static final double[] UTILIZATION_LEVELS = {0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0};
-    public static final double[] CACHE_WEIGHTS = {0.4, 0.3, 0.2, 0.1};
-  
-    // 运行时配置快照
-    public void saveConfiguration(String filename) {
-        Properties config = new Properties();
-        config.setProperty("version", CONFIG_VERSION);
-        config.setProperty("timestamp", Instant.now().toString());
-        config.setProperty("java.version", System.getProperty("java.version"));
-        config.setProperty("os.name", System.getProperty("os.name"));
-        // ... 保存完整配置
-    }
-}
+// AlgorithmComparisonExperiment.java 第 51–96 行（真实值）
+private static int CORES = 8;                 // --cores=
+private static int TOTAL_TEST_CASES = 100;    // --cases=
+private static int TASKS_PER_CASE = 60;       // --tasks=
+private static long SEED = 42;                // --seed= / --seeds=
+private static boolean ENABLE_VIZ = true;     // --no-viz
+private static boolean LEGACY_METRICS = false;// --legacy-metrics
+
+private static final double[] UTILIZATION_LEVELS = {0.6, 0.8, 1.0, 1.2, 1.5};
+private static final double HIGH_CACHE_SENSITIVITY_RATIO = 0.7;
 ```
+
+> 早期版本文档写的是 `TASKS_PER_CASE = 50` 与 7 级利用率 `{0.4 … 2.0}`，**与代码不符**（实际 60 任务、5 级利用率），已按源码订正。复现命令见 [`docs/EXPERIMENT_REPORT.md`](../docs/EXPERIMENT_REPORT.md) §8。
 
 #### 3. 版本控制与构建一致性
 
@@ -1833,27 +1791,35 @@ echo "📊 结果文件位置: visualizer/result/"
 
 ### 结果验证标准
 
-#### 预期实验结果范围
+#### 预期实验结果范围（公平口径）
+
+> **⚠️ 已订正**：早期版本此处断言"预期 Makespan 改进 15%+、命中率改进 20%+、胜率 70%+"。这组阈值是**按旧（不公平）口径倒推出来的**，公平模型下长这样：
 
 ```java
-// 标准实验结果验证基准
+// 公平基线（C1）下的现实预期，来自 seed=42 实测 + 5 种子复核
 public class ResultValidationStandards {
-    // Cache-Aware算法预期性能范围
-    public static final double EXPECTED_MAKESPAN_IMPROVEMENT = 0.15; // 15%+
-    public static final double EXPECTED_CACHE_HIT_IMPROVEMENT = 0.20; // 20%+
-    public static final double EXPECTED_WIN_RATE = 0.70; // 70%+
-  
-    // 结果容差范围
-    public static final double PERFORMANCE_TOLERANCE = 0.05; // 5%
-    public static final double CACHE_TOLERANCE = 0.03; // 3%
-  
-    public boolean validateResults(ExperimentSummary summary) {
-        return summary.makespanImprovement >= EXPECTED_MAKESPAN_IMPROVEMENT - PERFORMANCE_TOLERANCE
-            && summary.cacheHitImprovement >= EXPECTED_CACHE_HIT_IMPROVEMENT - CACHE_TOLERANCE
-            && summary.winRate >= EXPECTED_WIN_RATE - PERFORMANCE_TOLERANCE;
+    // 不可再以"提升幅度"作为通过条件
+    public static final double MAKESPAN_DIFF_MEAN   =  0.004;  // +0.39%（配对均值）
+    public static final double MAKESPAN_DIFF_SD     =  0.077;  // 7.70%
+    public static final double MAKESPAN_DIFF_CI     =  0.015;  // ±1.51%
+    public static final double CACHE_HIT_DIFF_PP    =  0.82;   // +0.82 个百分点
+    public static final double WIN_RATE_CACHEAWARE  =  0.56;   // 56/100
+
+    /**
+     * 公平口径下唯一可断言的性质：
+     *   1) 两算法在同一模型下运行（expectedET 不被任何算法改写）；
+     *   2) 命中率由 SharedCacheModel 实测，不按算法名分派；
+     *   3) 差异的置信区间跨 0 —— 即"没有可观测优势"本身是预期的正确结果。
+     */
+    public boolean validateFairness(ExperimentSummary s) {
+        return s.usesSharedCacheModel
+            && !s.expectedETMutated
+            && Math.abs(s.makespanDiffCi) > Math.abs(s.makespanDiffMean); // CI 跨 0
     }
 }
 ```
+
+若未来在**更真实的层级代价**（如 L1 0.5 / 内存 2.0）或**真实 trace** 下重跑，才应重新设定有意义的提升阈值。现状下把阈值下调为"无差异"才是诚实的做法。
 
 ---
 

@@ -37,6 +37,25 @@ public class PerformanceAnalyzer {
     
     /** 数字格式化器，用于结果展示 */
     private DecimalFormat df = new DecimalFormat("#.###");
+
+    /**
+     * 是否启用旧的不公平度量口径（按算法名估算命中率、WFD 命中率硬截断）。
+     * 默认关闭；仅用于复现历史实验结果做对比。
+     */
+    private final boolean legacyMetrics;
+
+    public PerformanceAnalyzer() {
+        this(false);
+    }
+
+    public PerformanceAnalyzer(boolean legacyMetrics) {
+        this.legacyMetrics = legacyMetrics;
+    }
+
+    /** 只读访问：当前分析器是否处于旧口径。 */
+    public boolean isLegacyMetrics() {
+        return legacyMetrics;
+    }
     
     /** 历史实验结果存储列表 */
     private List<ExperimentResult> results = new ArrayList<>();      
@@ -245,19 +264,71 @@ public class PerformanceAnalyzer {
         // 返回负载均衡度（1 - 归一化标准差）
         return avgLoad > 0 ? 1.0 - (stdDev / avgLoad) : 0;
     }
-      /**
-     * 计算缓存命中率 - 修正版本
-     * 区分不同算法，使用实际的缓存命中率数据
-     */    /**
-     * 计算缓存命中率 - 重新设计版本
+    /**
+     * 计算缓存命中率（公平基线 C1）。
+     *
+     * <p><b>规则</b>：只要任务带有实测标记 {@code cacheMeasured}，就直接使用
+     * {@code SharedCacheModel} 写回的 {@code actualCacheHitRatio}，**与算法名无关**。
+     * 这样 WFD 与 CacheAware 的命中率差异只可能来自"任务被放到哪个核"，
+     * 而不是来自两套不同的估算公式。
+     *
+     * <p>只有当任务没有任何实测值（例如外部直接构造的任务列表）时，才退回按算法名的
+     * 估算；旧的"WFD 命中率硬截断到 [0.30, 0.70]"的行为已删除。
      */
     private double calculateCacheHitRatio(List<Node> tasks, String algorithmName) {
-        if (algorithmName.contains("CacheAware")) {
+        double measured = calculateMeasuredCacheHitRatio(tasks);
+        if (!Double.isNaN(measured)) {
+            return measured;
+        }
+        if (legacyMetrics) {
+            return estimateCacheHitRatioLegacy(tasks, algorithmName);
+        }
+        // 无实测数据时，仍使用同一个与算法无关的估算，避免制造算法间差异。
+        return calculateBasicCacheHitRatio(tasks);
+    }
+
+    /**
+     * 基于实测值的加权平均命中率。
+     *
+     * <p>权重取任务的缓存权重之和（L1+L2+L3+L4），反映该任务"有多少访存行为"，
+     * 避免大量极小任务把均值稀释。
+     *
+     * @return 命中率；若没有任何任务带实测值则返回 {@link Double#NaN}
+     */
+    private double calculateMeasuredCacheHitRatio(List<Node> tasks) {
+        double weighted = 0.0;
+        double totalWeight = 0.0;
+
+        for (Node task : tasks) {
+            if (!task.cacheMeasured) {
+                continue;
+            }
+            double w = 1.0;
+            if (task.weights != null && task.weights.length > 0) {
+                double sum = 0.0;
+                for (double v : task.weights) {
+                    if (v > 0) {
+                        sum += v;
+                    }
+                }
+                if (sum > 0) {
+                    w = sum;
+                }
+            }
+            weighted += task.actualCacheHitRatio * w;
+            totalWeight += w;
+        }
+
+        return totalWeight > 0 ? weighted / totalWeight : Double.NaN;
+    }
+
+    /** 旧口径（按算法名估算）——仅用于 {@code --legacy-metrics} 复现历史数值。 */
+    private double estimateCacheHitRatioLegacy(List<Node> tasks, String algorithmName) {
+        if (algorithmName != null && algorithmName.contains("CacheAware")) {
             return calculateCacheAwareCacheHitRatio(tasks);
         } else if ("WFD".equals(algorithmName)) {
             return calculateWFDCacheHitRatio(tasks);
         } else {
-            // 其他算法使用基础计算
             return calculateBasicCacheHitRatio(tasks);
         }
     }
