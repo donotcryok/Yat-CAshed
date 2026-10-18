@@ -50,12 +50,24 @@ make -j"$(nproc)"
 
 ### 运行测试（QEMU）
 
+两种入口，用途不同：
+
 ```bash
+# A. 交互式探索（手动进 shell、看 proc/debugfs、跑单条命令）
 cd yat_test_scripts
 ./create_test_initramfs.sh       # 生成 initramfs
 ./start_test_environment.sh      # 启动 QEMU
 # 退出：exit → Ctrl+A → X
+
+# B. 出数据（两个独立 QEMU 进程，唯一变量是调度策略，自动落 CSV）
+cd yat_test_scripts
+./compare_cfs_vs_yat.sh --tasks 8 --iters 2000000 \
+                        --affinity none --sleep-us 200 --timeout 300
 ```
+
+> 要验证 AJLR（A8）必须用 B，且 `--affinity none` 与 `--sleep-us > 0` **缺一不可**：
+> `shared` 会把 `nr_cpus_allowed` 压到 1 使调度类回调不被调用，`sleep-us 0` 则没有
+> `WF_TTWU` 唤醒。完整命令与计数器读法见 [`OPERATIONS.md`](OPERATIONS.md)。
 
 > ✅ `kernel/sched/yat_casched.c` 的合并冲突已按「路线 A（决赛 AJLR 版）」解决，文件可直接参与编译。
 > 决议与遗留项见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7–§8。
