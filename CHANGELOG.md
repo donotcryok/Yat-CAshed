@@ -3,6 +3,111 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — P2 内核质量：A4 → A5 → A6 → A7
+
+本轮聚焦**真实内核**的工程质量（模拟器只做必要维护）。核心成果是：
+把「能编译」推进到「能跑、跑得干净、可观测、可对比」。
+
+### 新增（Added）
+
+- **A6 可观测性**：
+  - [`include/trace/events/yat_casched.h`](linux-6.8-main/include/trace/events/yat_casched.h)
+    —— 5 个 tracepoint：`yat_casched_enqueue` / `_dequeue` / `_pick` / `_place` / `_account`。
+    用 tracepoint 而非 `printk`：未启用时是静态分支，零运行时开销，不会扰动调度时序。
+  - `debugfs` 三个节点（`/sys/kernel/debug/yat_casched/`）：
+    `stats`（7 项 per-CPU 计数求和 + `nr_cpu_ids`）、`ready_pool`、`dags`。
+    注册方式 `late_initcall(yat_debugfs_init)` —— debugfs 是 `core_initcall`，
+    `sched_init()` 时还不存在。
+  - 7 项 per-CPU 计数器：`balance_runs` / `balance_skips` / `jobs_placed` /
+    `jobs_nocore` / `history_records` / `accel_inserts` / `accel_dup`，
+    用 `this_cpu_inc()` 写入、`per_cpu_ptr()` + `offsetof()` 求和读取。
+- **A7 测试体系**：
+  - [`boot_test_scripts/yat_bench.c`](linux-6.8-main/boot_test_scripts/yat_bench.c)
+    —— 固定工作量基准（N 进程 × M 迭代），输出单行机器可解析的
+    `YATCSV,policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online`。
+    退出码 `0` 成功 / `2` 调用失败 / `3` 内核无该调度类。
+  - [`yat_test_scripts/compare_cfs_vs_yat.sh`](linux-6.8-main/yat_test_scripts/compare_cfs_vs_yat.sh)
+    —— 同一内核、同一 initramfs、同一份基准二进制，通过内核命令行
+    `yatbench=cfs|yat` 切换策略；两轮是**两个独立 QEMU 进程**，避免热状态污染。
+    自动预检、自动扫描内核日志异常、自动 dump A6 节点、产出
+    `results/cfs_vs_yat.csv` 与配对摘要。
+  - 顶层 Makefile 新增 `kernel-obj` / `kernel-build` / `kernel-bench` / `kernel-compare`。
+- **`.gitignore`**：补齐 `test_with_programs_build/`、`yat_test_scripts/results/`、
+  `yat_test_scripts/*.log`、`/boot_test_scripts/yat_bench` 等条目。
+
+### 变更（Changed）
+
+- **A7 目录职责物理隔离**：
+  - `boot_test_scripts/` 现在**只放 C 源码**（+ 说明文档）；
+  - `yat_test_scripts/` **只放 Shell 脚本**。
+  - `build_yat_simple_test.sh` / `start_yat_simple_test.sh` 用 `git mv` 迁到
+    `yat_test_scripts/`，并重写为「编译产物落 `yat_simple_test_env/build/`」。
+  - `create_test_initramfs.sh` 的编译产物从 `$BOOT_DIR/$name` 改为
+    `test_with_programs_build/$name` —— 源码目录**物理上**不再出现二进制。
+  - 三份 README（`boot_test_scripts/README.md`、`SIMPLE_TEST_README.md`、
+    `yat_test_scripts/README.md`）全部重写，讲清目录约定、CSV 字段、两个引导坑。
+- **A4 集成点**：`vmlinux.lds.h` 的 `__yat_casched_sched_class` 段改为 `#ifdef`
+  条件编译（未启用时不插入空段）；`core.c` 的调度类顺序校验改为带诊断信息的 panic；
+  `sched.h` 重复 `#include` 去除；`init/Kconfig` 位置说明修正（6.8 无
+  `kernel/sched/Kconfig`，`SCHED_*` 通用项本就在 `init/Kconfig`）。
+- **A5 并发与内存安全**：锁层级文档化 `rq_lock → global_dag_lock → dag->lock → pool->lock`；
+  删除误用的 `yat_pool_lock`；`balance` 允许任一 CPU 执行并用 `spin_trylock` 单飞；
+  `GFP_ATOMIC` / `GFP_KERNEL` 由调用者显式传入；history 表加 512 条软上限；
+  `add_history_record()` 的 kfree 移到锁外；`yat_accel_table_insert()` 改
+  「先分配后取锁，EEXIST 释放己方副本」；`yat_find_best_core_for_job()` 改单遍遍历；
+  删除 `yat_ready_pool_peek()` 消除 TOCTOU；`yat_destroy_job()` 先摘链再 kfree 消除 UAF。
+
+### 修复（Fixed）
+
+- **真实 IRQ 倒置死锁（由 QEMU 实跑 + lockdep 发现，非理论推演）**：
+  `debugfs` 的 `yat_ready_pool_show()` / `yat_dags_show()` 用普通 `spin_lock()`
+  读取 `pool->lock` / `global_dag_lock` / `dag->lock`。这三把锁在调度热路径上
+  总是在**关中断**状态下获取（`balance_yat_casched()` 运行在 irq-safe 的 `rq_lock` 内），
+  因此 lockdep 报 `possible irq lock inversion dependency detected`
+  （`&pool->lock#3` vs HARDIRQ-safe 的 `&rq->__lock`，`*** DEADLOCK ***`）。
+  修复：三个 `_show` 全部改 `spin_lock_irqsave()` / `spin_unlock_irqrestore()`，
+  内层 `dag->lock` 用 `spin_lock_nested(&dag->lock, 1)` 显式声明
+  `global_dag_lock → dag->lock` 的合法父子层次。
+- **`CHANGELOG.md` 首行历史残留字符** `ao#` → `#`。
+
+### 验证（Verified）
+
+- 单文件编译 `make kernel/sched/yat_casched.o`：零 error / 零 warning。
+- 全量构建（`PROVE_LOCKING` + `DEBUG_ATOMIC_SLEEP` + `DEBUG_SPINLOCK` +
+  `DEBUG_LIST` + `DEBUG_OBJECTS` + `KASAN` + `DEBUG_KMEMLEAK`）：
+  `Kernel: arch/x86/boot/bzImage is ready (#3)`，`grep -cE "error:|Error [0-9]"` = 0。
+- QEMU 实跑（4 vCPU / 1 GB / `-accel tcg`）后：
+  - `possible irq lock inversion` 计数：cfs 日志 0 / yat 日志 0；
+  - `KASAN:` = 0；`BUG:` / `Oops:` / `general protection fault` /
+    `possible circular locking` = 0。
+- CFS vs Yat 对比（`--iters 2000000 --tasks 4 --cpus 4`，单次）：
+
+  ```csv
+  policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online
+  cfs,4,2000000,0,228582740,15985290,77244970,8000000,0,55,4
+  yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
+  ```
+
+  墙钟比 `yat/cfs ≈ 0.268`，非自愿上下文切换 `55 → 7`，
+  `sum_work_units` 两轮均为 8000000（= 4 × 2000000）确认负载跑完。
+- `create_test_initramfs.sh` 实跑：`boot_test_scripts/` 仍只有 4 个文件
+  （2 个 `.c` + 2 个 `.md`），二进制落在 `test_with_programs_build/`。
+
+### 已知遗留（Known Issues）
+
+- **AJLR 就绪池未接入主调度路径**：`yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到
+  `task_struct`，**不插入 `global_ready_pool`**；`pick_next_task_yat_casched()` 是从
+  `rq->yat_casched.tasks` 链表里选任务的。因此 debugfs 里 `jobs_placed` /
+  `history_records` / `accel_inserts` 常为 0（而 `balance_runs` 非零，证明调度类确实被调用）。
+  **这是架构现状，不是 bug**。所以上面的性能数据反映的是「调度类切换」本身
+  （短队列选择器 vs CFS 红黑树 + vruntime），**不能作为 AJLR 分配算法有效性的证据**。
+  该限定已写入 `ROADMAP.md`、`CONFLICT_ANALYSIS.md §8.7.5`、
+  `yat_test_scripts/README.md`，并由脚本在 `jobs_placed == 0` 时自动提示。
+- **TCG 单次噪声大**：建议 `--iters` 提到 2000 万以上，或重复多次取中位数，
+  不要用单次 `min_wall_ns` 的差异下结论。
+- `docs/archive/` 归档收敛、项目名三种写法统一、LICENSE 对模拟器/文档的授权澄清
+  仍属 P1 文档治理范畴，本轮未动。
+
 ## [Unreleased] — A1 补丁化 + C1 公平基线
 
 ### 新增（Added）

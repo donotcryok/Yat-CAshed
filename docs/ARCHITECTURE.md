@@ -54,16 +54,53 @@ graph TD
 |------|------|
 | `kernel/sched/yat_casched.c` | 调度器核心实现（**决赛 AJLR 版**，冲突已解决） |
 | `include/linux/sched/yat_casched.h` | 数据结构与接口声明 |
-| `kernel/sched/Kconfig` → 实际在 `init/Kconfig:1996` | `SCHED_CLASS_YAT_CASCHED` 配置项（`default n`） |
+| `include/trace/events/yat_casched.h` | **A6**：5 个 tracepoint 定义（enqueue / dequeue / pick / place / account） |
+| `init/Kconfig` | `SCHED_CLASS_YAT_CASCHED` 配置项（`default n`）。放在 `init/Kconfig` 是**符合上游现状**的做法：6.8 中 `SCHED_*` 通用项都在这里，`kernel/sched/Kconfig` 并不存在 |
 | `kernel/sched/Makefile:35` | `obj-$(CONFIG_SCHED_CLASS_YAT_CASCHED) += yat_casched.o` |
-| `kernel/sched/sched.h:193` | `yat_casched_policy()`（**存在重复 include，见第 5 节**） |
+| `kernel/sched/sched.h:193` | `yat_casched_policy()` |
 | `kernel/sched/core.c` | 调度类注册、优先级校验、`rq` 初始化等，共 10 余处 `#ifdef` |
 | `include/linux/sched.h:801` | `task_struct` 增加 `struct sched_yat_casched_entity yat_casched` |
 | `include/uapi/linux/sched.h` | `SCHED_YAT_CASCHED = 8` |
-| `include/asm-generic/vmlinux.lds.h:135` | `__yat_casched_sched_class` 段注册 |
+| `include/asm-generic/vmlinux.lds.h:135` | `__yat_casched_sched_class` 段注册（**A4** 已改为条件编译，见第 5 节 P8） |
 
 > `DEFINE_SCHED_CLASS(name)` 宏定义在 `kernel/sched/sched.h:2361`，调度类顺序为
-> `stop → dl → rt → fair → yat_casched → idle`（由 `core.c:9951` 的 `BUG_ON` 强校验）。
+> `stop → dl → rt → fair → yat_casched → idle`（由 `core.c:9951` 的 `BUG_ON` 强校验；
+> A4 已把该处校验改为**带诊断信息的 panic 消息**）。
+
+### 3.1.1 可观测性接口（A6）
+
+```
+/sys/kernel/debug/yat_casched/
+├── stats        # 7 项 per-CPU 计数器求和 + nr_cpu_ids
+├── ready_pool   # 就绪池快照
+└── dags         # DAG 列表 + 每个 DAG 的 waiting/ready/running 分布
+```
+
+- 注册时机：`late_initcall(yat_debugfs_init)`。debugfs 本身是 `core_initcall`，
+  `sched_init()` 执行时它还不存在，因此不能在 `sched_init()` 里挂节点。
+- 计数实现：`this_cpu_inc()` / `this_cpu_add()` 写入，读取端用
+  `per_cpu_ptr()` + `offsetof()` 遍历求和，避免读时引入全局锁。
+- **锁序要求**：三个 `_show` 函数全部使用 `spin_lock_irqsave()`。
+  原因见 [CONFLICT_ANALYSIS.md §8.7](CONFLICT_ANALYSIS.md)：这些锁在调度热路径上
+  总是在关中断状态下获取（`rq_lock` 是 irq-safe 的），普通 `spin_lock()` 会构成
+  **真实的 IRQ 倒置 ABBA 死锁**。这一点是 QEMU 实跑时 lockdep 报出来的，不是理论推演。
+
+```
+tracepoint（运行时零开销；未启用时只是静态分支）
+yat_casched:yat_casched_enqueue / _dequeue / _pick / _place / _account
+```
+
+### 3.1.2 测试与基准入口（A7）
+
+| 位置 | 只放什么 | 产物 |
+|------|----------|------|
+| `boot_test_scripts/` | **C 源码**：`yat_simple_test.c`（功能冒烟）、`yat_bench.c`（固定工作量基准） | 无（编译产物一律不放这里） |
+| `yat_test_scripts/` | **Shell 脚本**：编译 / 打包 initramfs / 启动 QEMU / CFS vs YAT 对比 | `test_with_programs_build/`、`yat_test_scripts/results/` |
+
+`compare_cfs_vs_yat.sh` 的设计约束：同一份 `bzImage`、同一份 initramfs、
+同一份 `yat_bench` 二进制，通过内核命令行 `yatbench=cfs|yat` 切换策略，
+两轮为**两个独立 QEMU 进程**，唯一变量是调度策略。
+Makefile 侧由 `kernel-compare` 目标驱动。
 
 ### 3.2 调度类关键回调（`DEFINE_SCHED_CLASS`）
 
@@ -114,4 +151,17 @@ Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.ba
 | P5 | 实现文档重复分叉 | 内核目录 vs `report/paper` | 记录 + 索引 |
 | P6 | 模拟器构建脚本仅支持 Windows | `simulator/Makefile` | ✅ 已改写为跨平台 GNU Make |
 | P7 | 缺少 LICENSE / CONTRIBUTING / CI / .editorconfig | 仓库根 | ✅ 新增 |
-| P8 | 调度类顺序依赖 `vmlinux.lds.h` 手工插段，脆弱 | `vmlinux.lds.h:135` | 记录 |
+| P8 | 调度类顺序依赖 `vmlinux.lds.h` 手工插段，脆弱 | `vmlinux.lds.h:135` | ✅ 已加 `#ifdef` 条件编译，未启用时不插入空段 |
+| P9 | A5 静态审查发现的锁序/TOCTOU/UAF/原子上下文分配问题 | `yat_casched.c` | ✅ 已逐条修复（详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §8.7 与 ROADMAP A5） |
+| P10 | debugfs `_show` 用普通 `spin_lock()` 读 irq-safe 锁 | `yat_casched.c` 三个 `_show` | ✅ **实跑 lockdep 报出真实死锁，已改 `spin_lock_irqsave`** |
+| P11 | `printk` 散落、无法观测内部状态 | `yat_casched.c` | ✅ A6：5 个 tracepoint + 3 个 debugfs 节点 + 7 项 per-CPU 计数 |
+| P12 | 测试目录职责混用、缺少 CFS vs Yat 自动对比 | `boot_test_scripts/`、`yat_test_scripts/` | ✅ A7：目录物理隔离 + `yat_bench.c` + `compare_cfs_vs_yat.sh` |
+
+### 5.1 仍未解决的结构性问题（据实记录）
+
+| 问题 | 说明 |
+|------|------|
+| **AJLR 就绪池未接入主调度路径** | `yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`，**不插入 `global_ready_pool`**；`pick_next_task_yat_casched()` 从 `rq->yat_casched.tasks` 选任务。就绪池目前只被 `yat_create_test_dag()` 演示路径使用。因此 `jobs_placed` / `history_records` / `accel_inserts` 常为 0。这是**架构现状，不是 bug**；要验证 AJLR 算法效果需改动调度路径（属方向 D，不在 P2 质量工程范围）。 |
+| **两份「完整实现文档」分叉** | `linux-6.8-main/Yat_Casched开发文档.md` 与 `report/paper/Yat_Casched_完整实现文档.md` 内容高度重合。属 P1 文档治理范畴，待归档收敛到 `docs/archive/`。 |
+| **项目名三种写法并存** | `Yat-CAShed` / `Yat_CAShed` / `Yat_Casched` 在代码、文档、脚本中混用。属 P1 文档治理范畴。 |
+| **LICENSE 对模拟器/文档未明确** | 内核部分 GPL-2.0 清晰；模拟器与文档目前只写「以参考论文为准」，法律上不清晰。属 P1 范畴。 |

@@ -465,3 +465,149 @@ kernel/sched/sched.h
 | `chore(simulator,report,docs)` | 移除 29 个死依赖 JAR、删除 0 字节 `Yat-CAShed_new.tex`、模拟器与报告行尾统一 |
 | `docs` | 记录 §8.6 仓库完整性修复（本文档 + `CHANGELOG` + `ROADMAP` A1） |
 | `fix(linux-6.8-main)` 二 | 修 15 个断链 symlink（`100644`→`120000`）、修 13 处大小写冲突内容错位、`init/Kconfig` 缩进改 Tab |
+
+---
+
+### 8.7 A5 运行时验证：lockdep 报出一处真实 IRQ 倒置死锁（本轮新增）
+
+§8.5 只证明了「能编译、能链接」。本轮补上了**能跑且跑得干净**：
+在 `defconfig` 基础上开 `SCHED_CLASS_YAT_CASCHED` + `PROVE_LOCKING` +
+`DEBUG_ATOMIC_SLEEP` + `DEBUG_SPINLOCK` + `DEBUG_LIST` + `DEBUG_OBJECTS` +
+`KASAN` + `DEBUG_KMEMLEAK`，全量构建后在 QEMU（4 vCPU / 1 GB / `-accel tcg`）里实跑。
+
+#### 8.7.1 报出的现象
+
+第一轮实跑，串口日志出现（由 A6 新增的 debugfs 读取动作触发）：
+
+```
+WARNING: possible irq lock inversion dependency detected
+6.8.0 #2 Not tainted
+busybox/83 just changed the state of lock:
+ (&pool->lock#3){+...}-{2:2}, at: yat_ready_pool_show+0x32/0x350
+but this lock was taken by another, HARDIRQ-safe lock in the past:
+ (&rq->__lock){-.-.}-{2:2}
+...
+  Possible interrupt unsafe locking scenario:
+
+        CPU0                    CPU1
+        ----                    ----
+   lock(&pool->lock#3);
+                                local_irq_disable();
+                                lock(&rq->__lock);
+                                lock(&pool->lock#3);
+   <Interrupt>
+     lock(&rq->__lock);
+
+  *** DEADLOCK ***
+
+ -> (&pool->lock#3){+...}-{2:2} {
+    HARDIRQ-ON-W at: ... yat_ready_pool_show+0x32 ...
+    INITIAL USE at:  ... yat_schedule_ajlr+0x26e
+                     ... balance_yat_casched+0x3c
+                     ... __schedule ...
+```
+
+#### 8.7.2 为什么这不是误报
+
+`balance_yat_casched()` 由 `__schedule()` → `balance()` 调用，而 `balance()` 运行在
+`rq_lock` 之内；`rq_lock` 在排序器路径上是 **irq-safe**（`scheduler_tick()` 会在
+中断上下文里取它）。因此所有在 `rq_lock` 内被获取的锁
+（`global_dag_lock`、`dag->lock`、`global_ready_pool->lock`）在 lockdep 眼里
+**都获得了 HARDIRQ-safe 属性**。
+
+而 debugfs 的 `read()` 跑在普通进程上下文，中断是开着的。原实现：
+
+```c
+spin_lock(&pool->lock);      /* 中断仍然开着 */
+...  seq_printf(...)
+spin_unlock(&pool->lock);
+```
+
+构成真实的 ABBA：
+
+- CPU0：进程持有 `pool->lock`（中断开）→ 此时来定时器中断；
+- CPU1 或 CPU0 的中断上下文：`scheduler_tick()` 取 `rq->lock` → `balance()` 取 `pool->lock` → 等 CPU0 释放；
+- CPU0：中断返回后如果需要 `rq->lock` → 等中断上下文 → 互相等待。
+
+#### 8.7.3 修复
+
+三个 `_show` 函数统一改为 irq-safe 形式，并显式声明嵌套层级：
+
+```c
+static int yat_ready_pool_show(struct seq_file *m, void *v)
+{
+        unsigned long flags;
+        ...
+        spin_lock_irqsave(&pool->lock, flags);
+        ...
+        spin_unlock_irqrestore(&pool->lock, flags);
+}
+```
+
+```c
+static int yat_dags_show(struct seq_file *m, void *v)
+{
+        unsigned long flags;
+        ...
+        spin_lock_irqsave(&global_dag_lock, flags);   /* 父锁 */
+        list_for_each_entry(dag, &global_dag_list, dag_list) {
+                spin_lock_nested(&dag->lock, 1);      /* 子锁，声明层次 */
+                ...
+                spin_unlock(&dag->lock);
+        }
+        spin_unlock_irqrestore(&global_dag_lock, flags);
+}
+```
+
+`spin_lock_nested(&dag->lock, 1)` 的作用是告诉 lockdep：
+`global_dag_lock → dag->lock` 是**预期的父子关系**（调度路径
+`yat_update_ready_pool()` 里也是这个顺序），不要当成环。
+
+#### 8.7.4 修复后的验证
+
+| 检查项 | 命令 | 结果 |
+|--------|------|------|
+| 单文件编译 | `make kernel/sched/yat_casched.o` | 零 error / 零 warning |
+| 全量构建 | `make -j$(nproc)` | `Kernel: arch/x86/boot/bzImage is ready (#3)` |
+| lockdep IRQ 倒置 | `grep -c 'possible irq lock inversion' results/qemu_{cfs,yat}.log` | **0 / 0** |
+| KASAN | `grep -c 'KASAN:' results/qemu_*.log` | **0 / 0** |
+| 其他异常 | `grep -cE 'BUG:\|Oops:\|general protection fault\|possible circular locking' results/qemu_*.log` | **0 / 0** |
+
+#### 8.7.5 一条重要的负面结论（防止误读性能数据）
+
+同一轮 debugfs 计数显示：
+
+```
+--- stats ---
+balance_runs      10
+balance_skips      3
+jobs_placed        0
+jobs_nocore        0
+history_records    0
+accel_inserts      0
+accel_dup          0
+nr_cpu_ids         4
+--- ready_pool ---
+nr_jobs 0
+```
+
+`balance_runs` 非零，证明调度类**确实被调用**；但 `jobs_placed` / `history_records` /
+`accel_inserts` 全为 0。核查代码后确认这是**架构事实而非 bug**：
+
+- `yat_ajlr_enqueue_task()` 只调用 `__yat_create_job(..., GFP_ATOMIC)` 把 `yat_job`
+  绑定到 `p->yat_casched.job`，**没有**调用 `yat_ready_pool_enqueue()`；
+- `pick_next_task_yat_casched()` 遍历的是 `rq->yat_casched.tasks` 链表，不是就绪池。
+
+也就是说，AJLR 就绪池目前只被 `yat_create_test_dag()` 这条 boot 期演示路径使用。
+因此 `compare_cfs_vs_yat.sh` 测出的时间差，**来源于「调度类切换」本身**
+（Yat 是近似 FIFO/RR 的短队列选择器，CFS 是红黑树 + vruntime），
+**不能作为 AJLR 作业分配算法有效性的证据**。
+
+该限定已同时写入：
+- `ROADMAP.md` 的 A7 节；
+- `yat_test_scripts/README.md` 的「结果怎么读」；
+- `compare_cfs_vs_yat.sh` 的运行时提示（`jobs_placed == 0` 时自动打印）。
+
+若要真正验证 AJLR，需要先把 `yat_ajlr_enqueue_task()` 改为入池、
+并把 `pick_next_task_yat_casched()` 改为从池中选 —— 这属于算法改动（方向 D），
+不属于 P2 质量工程范畴，故本轮不做，仅如实记录。

@@ -85,31 +85,157 @@
 - ✅ 效果：1.6 GB / ~83k 文件的 `linux-6.8-main/` **不再是携带 Yat 改动的必需物**
 - ⏳ 未做：进一步减少对 `core.c` / `sched.h` 的侵入（需重新设计调度类挂载方式）
 
-### A4. 修复脆弱的内核集成点（P2）
-- `include/asm-generic/vmlinux.lds.h:135` 手工插入 `__yat_casched_sched_class` 段，
-  顺序错误会被 `core.c:9951` 的 `BUG_ON` 直接 panic。建议加注释与编译期断言说明约束。
-- `kernel/sched/sched.h` 重复 include（已修一处），建议通查。
-- ~~`init/Kconfig` 的配置项**缩进用了空格**而非 Tab~~ ✅ **已改为 Tab**。
-  仍待办：位置不在 `kernel/sched/Kconfig`，风格上仍不符内核惯例。
+### A4. 修复脆弱的内核集成点（P2）✅ 已完成
+- ✅ `include/asm-generic/vmlinux.lds.h` 的 `YAT_CASCHED_SCHED_CLASS` 已改为**条件编译宏**，
+  定位于 `__fair` 与 `__idle` 之间；段名顺序不再依赖人工插入位置。
+- ✅ `sched_init()` 加入**可诊断 panic**：一旦链接器把该类排到 `fair` 之后/`idle` 之前的
+  位置之外的任何地方，启动即报出具体错位方向与「去改 vmlinux.lds.h」的提示，
+  取代原先只有 `BUG_ON` 行号的盲猜。
+- ✅ `kernel/sched/sched.h` 重复 include 已通查去重。
+- ✅ `init/Kconfig` 配置项缩进已改为 Tab。
+- ⚠️ **事实性修正**：原条目写「位置不在 `kernel/sched/Kconfig`，风格不符内核惯例」——
+  **Linux 6.8 根本不存在 `kernel/sched/Kconfig`**。调度相关选项本就分散在
+  `init/Kconfig`（`SCHED_*` 通用项）与 `kernel/Kconfig.preempt`（抢占模型）中，
+  因此放在 `init/Kconfig` 是**符合上游现状**的做法，该项已撤销。
 
-### A5. 并发与内存安全审查（P2）
-重点审查 dev 版的全局单点调度路径：
-- `balance_yat_casched()`（CPU0）→ `schedule_yat_casched_tasks()` → `rq_lock(target_rq)`；
-- `yat_pool_lock`、`global_dag_lock`、`yat_accel_table.lock` 与 `rq_lock` 的**加锁顺序**；
-- `add_history_record()` 使用 `GFP_ATOMIC` 但可能被非原子上下文调用；
-- `yat_accel_table_insert()` 与 `yat_find_best_core_for_job()` 每次调度遍历所有 CPU 并在原子上下文
-  `kmalloc`（`GFP_ATOMIC`）——**性能与内存压力**隐患。
-- 建议：引入 `lockdep` 测试 + `KASAN/Kmemleak` 跑一轮。
+### A5. 并发与内存安全审查（P2）✅ 已完成（静态审查 + 运行时验证，并修掉一处真实死锁）
+逐条处置结果（详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §8.7）：
+- ✅ **加锁顺序**：文件头登记唯一合法层级 `rq_lock → global_dag_lock → dag->lock → pool->lock`；
+  history 表锁与 accel 表锁为**不嵌套的兄弟**，方向不可反转（否则 ABBA）。
+  原代码中 `yat_pool_lock` 实际保护的是与 rq 无关的就绪池，属于「用错锁保护数据」，
+  已删除该遗留全局锁，改为 `global_ready_pool->lock` 自洽。
+- ✅ **`balance` 只在 CPU0**：改为任一 CPU 均可执行，用 `spin_trylock(&yat_balance_lock)`
+  保证单飞；避免 CPU0 被长任务占满时全局调度彻底停摆。
+- ✅ **原子上下文分配**：`__yat_create_dag()` / `__yat_create_job()` 的 `gfp` 由调用者显式传入；
+  `yat_ajlr_enqueue_task()` 这条持 `rq_lock` 的路径用 `GFP_ATOMIC`，boot/测试路径用 `GFP_KERNEL`。
+- ✅ **`add_history_record()` 的 GFP_ATOMIC**：保留 `GFP_ATOMIC`（调度热路径），
+  但增加软上限 512 条 + 超限裁剪至 3/4，防止无界增长；kfree 移到锁外。
+- ✅ **`yat_accel_table_insert()`**：改为「先 `GFP_ATOMIC` kmalloc、后取锁、EEXIST 时释放己方副本」；
+  `yat_find_best_core_for_job()` 改为**单遍** `for_each_online_cpu`，只在胜出核心写一次遥测，
+  消除「每核一次 kmalloc」。
+- ✅ **TOCTOU**：`yat_ready_pool_peek()` 已删除，`yat_schedule_ajlr()` 改为原子
+  `yat_ready_pool_dequeue()`，找不到核心时原样 enqueue 放回。
+- ✅ **UAF**：`yat_destroy_job()` 先 `yat_ready_pool_remove()` 再 `kfree()`。
+- ✅ **初始化竞态**：全局结构拆出 `yat_global_init_once()` + `WRITE_ONCE/READ_ONCE` 保护，
+  修复了 `global_default_dag` 从未赋值（AJLR 路径完全失效）的功能回归。
+- ✅ **记账正确性**：`update_curr_yat_casched()` 补 `se.sum_exec_runtime`（否则 `task_tick`
+  永不触发抢占）；`put_prev_task` 先算 `delta_exec` 再 `update_curr`（否则恒为 0）；
+  删除两处 0 长度/wcet 冒充执行时间的错误记账。
+- ✅ **依赖图**：`yat_job_add_dependency()` / `yat_job_complete()` 由空 TODO 补全为真实双向挂链
+  与幂等完成传播。
+- ✅ **运行时验证（已完成）**：用 `defconfig` + `SCHED_CLASS_YAT_CASCHED` + `PROVE_LOCKING` +
+  `DEBUG_ATOMIC_SLEEP` + `DEBUG_SPINLOCK` + `DEBUG_LIST` + `DEBUG_OBJECTS` + `KASAN` +
+  `DEBUG_KMEMLEAK` 完成全量构建（`arch/x86/boot/bzImage is ready`，编译期零 error），
+  并在 QEMU 中实跑（4 vCPU / 1 GB / `-accel tcg`）。
 
-### A6. 可观测性（P2）
-- 用 `tracepoint` / `trace_printk` 替代散落的 `printk(KERN_INFO ...)`（当前会被刷屏、影响调度时序）。
-- 暴露 `/proc/sched_yat_casched` 或 `debugfs` 节点，输出历史表、加速表命中、迁移计数等。
+- ✅ **运行时暴露的真实缺陷（本轮最关键的发现）**：
+  `debugfs` 的 `yat_ready_pool_show()` / `yat_dags_show()` 用普通 `spin_lock()` 读取
+  `pool->lock` / `global_dag_lock` / `dag->lock`，而这三把锁在调度热路径上
+  **总是在关中断状态下获取**（`balance_yat_casched()` 运行在 irq-safe 的 `rq_lock` 之内）。
+  lockdep 实跑报出：
 
-### A7. 测试体系（P2）
-- ~~`boot_test_scripts` 有**空文件**（`yat_scheduler_test.c`、`test_simple_history_validation.c`）~~ ✅ 已在本次工程化整理中删除。
-- 统一两套测试目录（`boot_test_scripts` 与 `yat_test_scripts`）职责：
-  建议 `boot_test_scripts` 只放 C 测试源码，`yat_test_scripts` 只放 QEMU/initramfs 脚本。
-- 增加“同一负载 CFS vs Yat_Casched”自动对比脚本，产出 CSV。
+  ```
+  WARNING: possible irq lock inversion dependency detected
+   (&pool->lock#3){+...}-{2:2}, at: yat_ready_pool_show+0x32
+  but this lock was taken by another, HARDIRQ-safe lock in the past:
+   (&rq->__lock){-.-.}-{2:2}
+  *** DEADLOCK ***
+  ```
+
+  这是一个**真实的 ABBA 死锁窗口**（进程持 `pool->lock` + 中断里 `scheduler_tick()`
+  取 `rq->lock` 再取 `pool->lock`），不是 lockdep 误报。
+  修复：三个 `_show` 函数全部改为 `spin_lock_irqsave()` / `spin_unlock_irqrestore()`，
+  并在 `yat_dags_show()` 内层用 `spin_lock_nested(&dag->lock, 1)` 显式声明
+  `global_dag_lock → dag->lock` 这一合法父子层级。
+  修复后重跑，两份 QEMU 日志中 `possible irq lock inversion` 计数均为 **0**。
+
+- ✅ **KASAN / Kmemleak**：同一轮实跑中未见 `KASAN:` 报告，未见 `BUG:` / `Oops:` /
+  `general protection fault` / `possible circular locking`。
+
+### A6. 可观测性（P2）✅ 已完成
+目标：让「调度器内部到底发生了什么」可以被外部观测，而不是靠加 `printk` 刷屏。
+
+**已落地内容**（`linux-6.8-main/kernel/sched/yat_casched.c`）：
+
+1. **5 个 tracepoint**（定义在 `include/trace/events/yat_casched.h`，已接入 `include/trace/events/Makefile`）：
+   - `yat_casched_enqueue` / `yat_casched_dequeue`：进出调度类的任务与优先级；
+   - `yat_casched_pick`：选中了哪个任务、它的 `job_id`、当前 `nr_running`；
+   - `yat_casched_place`：AJLR 把作业放到了哪个核心、依据什么；
+   - `yat_casched_account`：记账事件（执行时间统计）。
+   用 tracepoint 而非 `printk` 的关键原因：**零成本关闭**（未启用时只是静态分支），
+   不会像 `printk` 那样扰动调度时序。
+
+2. **3 个 debugfs 节点**（`/sys/kernel/debug/yat_casched/`）：
+   - `stats`：7 项 per-CPU 计数器求和 —— `balance_runs` / `balance_skips` /
+     `jobs_placed` / `jobs_nocore` / `history_records` / `accel_inserts` / `accel_dup`，
+     外加 `nr_cpu_ids` 便于确认 SMP 是否真的生效；
+   - `ready_pool`：就绪池快照（作业 ID、任务 PID、优先级、DAG 优先级、WCET、状态）；
+   - `dags`：DAG 列表与每个 DAG 内作业的 waiting / ready / running 分布。
+
+   注册方式：`late_initcall(yat_debugfs_init)` —— debugfs 本身是 `core_initcall`，
+   在 `sched_init()` 时还不存在，所以只能在 `late_initcall` 阶段挂节点。
+   所有 `_show` 函数按 A5 的结论使用 `spin_lock_irqsave()`。
+
+   计数用 `this_cpu_inc()` / `this_cpu_add()` 累加，读取时用 `per_cpu_ptr` + `offsetof`
+   遍历求和，避免读取端引入全局锁竞争。
+
+**验收**：QEMU 实跑后 `cat /sys/kernel/debug/yat_casched/stats` 有真实非零值
+（`balance_runs` 在调度类被调用后递增），且该节点本身**不产生 lockdep 警告**。
+
+### A7. 测试体系（P2）✅ 已完成
+- ~~`boot_test_scripts` 有**空文件**（`yat_scheduler_test.c`、`test_simple_history_validation.c`）~~ ✅ 已删除。
+- ✅ **目录职责统一**（物理隔离，不靠约定）：
+  - `boot_test_scripts/` 只放 **C 源码**（`yat_simple_test.c`、`yat_bench.c`）+ 说明文档；
+  - `yat_test_scripts/` 只放 **Shell 脚本**，共 9 个（含新增的 `build_yat_simple_test.sh`、
+    `start_yat_simple_test.sh`、`compare_cfs_vs_yat.sh`）。
+  - `git mv` 迁移了两个脚本；`create_test_initramfs.sh` 的编译产物从
+    `$BOOT_DIR/$name` 改为 `test_with_programs_build/$name`，
+    使源码目录**物理上**不再出现二进制。
+  - `.gitignore` 相应补齐 `test_with_programs_build/`、`yat_test_scripts/results/` 等条目。
+- ✅ **新增负载基准** `boot_test_scripts/yat_bench.c`：N 进程 × M 次固定工作量，
+  输出机器可解析的单行 `YATCSV,policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,
+  max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online`，
+  退出码 `0` 成功 / `2` 调用失败 / `3` 内核无该调度类。
+- ✅ **新增自动对比脚本** `yat_test_scripts/compare_cfs_vs_yat.sh`：
+  - 同一份内核镜像、同一份 initramfs、同一份 `yat_bench` 二进制；
+  - 通过内核命令行 `yatbench=cfs|yat` 让 guest 侧在启动时切换策略 ——
+    **唯一变量是调度策略**；
+  - 两轮是**两个独立 QEMU 进程**（不是同一 guest 内先后跑），避免热状态污染；
+  - 自动预检（qemu / gcc / cpio / gzip / busybox / 内核镜像 / `CONFIG_SCHED_CLASS_YAT_CASCHED`）；
+  - 每轮结束后扫描内核日志中的 `BUG:` / `KASAN:` / `possible circular locking` /
+    `Oops:` / `watchdog: BUG` 等模式，命中即判定该轮数据不可信；
+  - 自动 dump A6 的 debugfs 三个节点到日志；
+  - 产出 `results/cfs_vs_yat.csv` 与配对摘要（比值、上下文切换差）。
+- ✅ **Makefile 接线**：新增 `kernel-obj` / `kernel-build` / `kernel-bench` / `kernel-compare`
+  四个目标，从仓库根目录即可驱动。
+
+**实测数据**（`--iters 2000000 --tasks 4 --cpus 4`，TCG 模拟，单次运行）：
+
+```csv
+policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online
+cfs,4,2000000,0,228582740,15985290,77244970,8000000,0,55,4
+yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
+```
+
+墙钟时间比 `yat/cfs ≈ 0.268`，非自愿上下文切换 `55 → 7`。
+`sum_work_units` 两轮均为 8000000（= 4 × 2000000），确认负载真的跑完。
+
+**必须带上的限定（诚实披露）**：同一轮 debugfs 显示
+`jobs_placed=0`、`history_records=0`、`accel_inserts=0`，而 `balance_runs` 非零。
+原因是 `yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`，
+**并不插入 `global_ready_pool`**；`pick_next_task_yat_casched()` 是从
+`rq->yat_casched.tasks` 链表里选任务的。AJLR 就绪池目前只被
+`yat_create_test_dag()` 这条演示路径使用。
+因此上述时间差**来源于「调度类切换」本身**（短队列选择器 vs CFS 红黑树 + vruntime），
+**不是 AJLR 作业分配算法的效果**。引用该数据时必须同时说明这一点；
+脚本也会在 `jobs_placed == 0` 时自动打印该提示。
+
+**两个实测踩到的引导坑**（已写入脚本注释与文档）：
+1. `-kernel` 不能指向 ELF `vmlinux`（`Error loading uncompressed kernel without PVH ELF Note`），
+   必须用 `arch/x86/boot/bzImage`；
+2. 不能加 `acpi=off` / `noapic` / `nolapic` —— `-kernel bzImage` 绕过 BIOS，
+   AP 只能靠 ACPI MADT 枚举，关掉后 guest 退化为 `nr_cpu_ids:1`，对比失去意义；
+   保留 ACPI 后 `poweroff -f` 也能真正让 QEMU 退出。
 
 ---
 
