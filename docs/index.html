@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yat-CAShed — 缓存感知的 Linux 调度类</title>
+<meta name="description" content="Yat-CAShed 是 Linux 6.8 上的一个缓存感知调度类（SCHED_YAT_CASCHED），把 AJLR 的作业放置决策真正接到 select_task_rq 上。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧠</text></svg>">
+<style>
+  :root{
+    --bg:#0b1020; --bg2:#121a33; --card:#151d38; --line:#26325a;
+    --fg:#e8ecf8; --muted:#9aa8c7; --accent:#5eead4; --accent2:#818cf8;
+    --warn:#fbbf24; --ok:#34d399;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f6f8fc; --bg2:#eef2fb; --card:#ffffff; --line:#dbe3f4;
+      --fg:#0f172a; --muted:#4b5a7a; --accent:#0f766e; --accent2:#4338ca;
+      --warn:#b45309; --ok:#047857;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  a{color:var(--accent2); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1040px; margin:0 auto; padding:0 22px}
+  header{
+    background:radial-gradient(1200px 400px at 50% -10%, color-mix(in srgb, var(--accent2) 22%, transparent), transparent 70%), var(--bg2);
+    border-bottom:1px solid var(--line);
+    padding:64px 0 52px;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.08em; font-size:13px; text-transform:uppercase}
+  h1{font-size:clamp(30px,5vw,46px); line-height:1.2; margin:10px 0 12px; letter-spacing:-.02em}
+  h1 span{color:var(--accent)}
+  .lead{color:var(--muted); font-size:18px; max-width:760px; margin:0 0 26px}
+  .btns{display:flex; flex-wrap:wrap; gap:12px}
+  .btn{
+    display:inline-block; padding:11px 18px; border-radius:10px; border:1px solid var(--line);
+    background:var(--card); color:var(--fg); font-weight:600; font-size:15px;
+  }
+  .btn:hover{text-decoration:none; border-color:var(--accent)}
+  .btn.primary{background:linear-gradient(135deg,var(--accent2),var(--accent)); color:#06121a; border:0}
+  section{padding:52px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:24px; margin:0 0 8px; letter-spacing:-.01em}
+  .sub{color:var(--muted); margin:0 0 26px}
+  .grid{display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px}
+  .card h3{margin:0 0 6px; font-size:16px}
+  .card p{margin:0; color:var(--muted); font-size:14.5px}
+  .num{font-size:30px; font-weight:800; letter-spacing:-.02em; margin:0 0 4px}
+  .num.ok{color:var(--ok)} .num.warn{color:var(--warn)} .num.accent{color:var(--accent)}
+  .note{
+    border-left:3px solid var(--warn); background:color-mix(in srgb, var(--warn) 10%, transparent);
+    padding:14px 16px; border-radius:0 10px 10px 0; color:var(--fg); font-size:15px;
+  }
+  pre{
+    background:var(--bg2); border:1px solid var(--line); border-radius:12px;
+    padding:16px 18px; overflow:auto; font-size:13.5px; line-height:1.7;
+  }
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre code{color:var(--fg)}
+  .flow{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:6px 0 0}
+  .node{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:10px 14px; font-size:14px; font-weight:600; white-space:nowrap;
+  }
+  .node small{display:block; color:var(--muted); font-weight:400; font-size:12px}
+  .arrow{color:var(--muted)}
+  ul.links{list-style:none; padding:0; margin:0; display:grid; gap:10px}
+  ul.links li{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 16px}
+  ul.links b{display:block; font-size:15px}
+  ul.links span{color:var(--muted); font-size:13.5px}
+  footer{padding:34px 0 60px; color:var(--muted); font-size:14px}
+  footer a{color:var(--fg)}
+  .foot-row{display:flex; flex-wrap:wrap; gap:18px; justify-content:space-between}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">Linux 6.8 · 自定义调度类 · 缓存感知</div>
+    <h1>Yat-<span>CAShed</span></h1>
+    <p class="lead">
+      一个运行在真实 Linux 内核里的 <b>缓存感知调度类</b>（<code>SCHED_YAT_CASCHED</code>）：
+      用 AJLR 的「收益 / 影响」模型决定任务该放到哪颗核，
+      并把决策真正接到内核唯一的跨核选核钩子 <code>select_task_rq</code> 上。
+      仓库同时包含内核补丁、可复现的 QEMU 对比测试，以及一个 Java 调度模拟器。
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/donotcryok/Yat-CAShed">GitHub 仓库</a>
+      <a class="btn" href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/OPERATIONS.md">操作手册</a>
+      <a class="btn" href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/ARCHITECTURE.md">架构说明</a>
+      <a class="btn" href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/ROADMAP.md">改进路线</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>它解决什么问题</h2>
+    <p class="sub">CFS 只关心公平与吞吐，不知道任务上次跑在哪个核、那部分缓存还在不在。</p>
+    <div class="grid">
+      <div class="card">
+        <h3>缓存亲和性</h3>
+        <p>按 (任务, CPU) 的历史执行区间估计 recency，计算「留在原核的收益」与「迁到目标核的影响」，取最优。</p>
+      </div>
+      <div class="card">
+        <h3>决策必须被执行</h3>
+        <p>算法只写 debugfs 数字没有意义。选核结果写回 <code>assigned_cpu</code>，并在 <code>pick_next_task</code> 中生效。</p>
+      </div>
+      <div class="card">
+        <h3>可观测</h3>
+        <p>6 个 tracepoint + 4 个 debugfs 节点 + 27 项 per-CPU 计数器，覆盖「进类 → 唤醒 → 选核 → 放置 → 执行」整条链路。</p>
+      </div>
+      <div class="card">
+        <h3>可复现</h3>
+        <p>同一份内核、同一份 initramfs、同一份负载，两个独立 QEMU 进程只改调度策略，自动落 CSV。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>实测结果（8 任务 / 4 核 / 2M 迭代 / 200µs 唤醒）</h2>
+    <p class="sub">数字来自仓库内 <code>compare_cfs_vs_yat.sh</code> 的真实 QEMU 运行，不是模拟。</p>
+    <div class="grid">
+      <div class="card">
+        <p class="num ok">98%</p>
+        <p><b>AJLR 接管率</b><br>925 命中 / 0 否决 / 14 未决策</p>
+      </div>
+      <div class="card">
+        <p class="num accent">512</p>
+        <p><b>正常唤醒次数</b><br>= 8 任务 × 64 次 sleep，与负载完全吻合</p>
+      </div>
+      <div class="card">
+        <p class="num accent">254</p>
+        <p><b>完成的作业放置</b><br>459 次进入选核回调 → 254 次真正决策</p>
+      </div>
+      <div class="card">
+        <p class="num warn">1.9–2.2×</p>
+        <p><b>墙钟开销（yat / cfs）</b><br>当前实现明显慢于 CFS，见下方说明</p>
+      </div>
+    </div>
+    <div class="note" style="margin-top:20px">
+      <b>结论要分两层看：</b>「AJLR 已真实接管选核」有数据支撑（唤醒数 → 决策数 → 放置数 → 命中率四者自洽）；
+      但「性能优于 CFS」<b>不成立</b> —— 当前实现慢约 2 倍。
+      原因是 O(nr_cpus²) 的 recency 扫描、每次 O(n) 的 pick 扫描，以及 TCG 模拟放大的切换成本。
+      一次「按需抢占」的优化经 3 次重复取中位数后被数据否决并已回退，记录在路线图的 A8.2 节。
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>决策链路</h2>
+    <p class="sub">每一跳都有对应计数器，挂死时能定位到具体是哪一跳断了。</p>
+    <div class="flow">
+      <div class="node">enqueue<small>进类了吗</small></div><span class="arrow">→</span>
+      <div class="node">try_to_wake_up<small>唤醒走到哪</small></div><span class="arrow">→</span>
+      <div class="node">select_task_rq<small>AJLR 算完放置</small></div><span class="arrow">→</span>
+      <div class="node">pick_next_task<small>按 assigned_cpu 选中</small></div><span class="arrow">→</span>
+      <div class="node">place_hit / miss<small>接管率</small></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>快速开始</h2>
+    <p class="sub">完整步骤（含环境依赖与故障排查）见操作手册。</p>
+<pre><code># 0) 最快的语法检查（只编调度器目标文件）
+make kernel-obj
+
+# 1) 编译内核
+make kernel-build            # 产物：linux-6.8-main/arch/x86/boot/bzImage
+
+# 2) 验证 AJLR 是否真的接管选核
+#    --affinity none 与 --sleep-us > 0 缺一不可，否则测不到
+linux-6.8-main/yat_test_scripts/compare_cfs_vs_yat.sh \
+    --tasks 8 --iters 2000000 --affinity none --sleep-us 200 --timeout 300
+
+# 3) 提交前门禁（仓库健康 + 文档链接 + 命名 + 符号 + 补丁 + 模拟器）
+make verify-all</code></pre>
+    <div class="note" style="margin-top:18px">
+      两个最容易踩的坑：<b>默认的 <code>--affinity shared</code> 会把任务 pin 到单核</b>，
+      使 <code>select_task_rq</code> 根本不调用调度类；<b>QEMU 启动时加 <code>acpi=off</code></b>
+      会让 guest 只剩 1 个 CPU，任何跨核对比都会失真。
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>文档导航</h2>
+    <p class="sub">全部文档都可以在 GitHub 上直接阅读。</p>
+    <ul class="links">
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/OPERATIONS.md">操作手册 · OPERATIONS</a></b><span>编译 / 验证 / 读计数器 / 发补丁，照着敲即可</span></li>
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/ARCHITECTURE.md">架构 · ARCHITECTURE</a></b><span>模块组成、集成点、可观测性接口、AJLR 决策链路</span></li>
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/ROADMAP.md">路线图 · ROADMAP</a></b><span>P0–P3 任务清单；A8 实跑结论与被数据否决的优化</span></li>
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/CONFLICT_ANALYSIS.md">冲突与决策 · CONFLICT_ANALYSIS</a></b><span>两代实现的取舍、A5 锁序审查、A8 实跑定位过程</span></li>
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/SCHEMA.md">数据格式 · SCHEMA</a></b><span>模拟器 CSV 与内核 CSV 的列定义、命名约定</span></li>
+      <li><b><a href="https://github.com/donotcryok/Yat-CAShed/blob/main/docs/EXPERIMENT_REPORT.md">模拟器实验报告</a></b><span>WFD vs CacheAware_v2：指标、统计、图表与局限</span></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div>
+      <b>Yat-CAShed</b> · 内核部分 GPL-2.0（与 Linux 一致），模拟器与自有文档保留所有权利。<br>
+      许可证细节见 <a href="https://github.com/donotcryok/Yat-CAShed/blob/main/LICENSE">LICENSE</a>。
+    </div>
+    <div>
+      <a href="https://github.com/donotcryok/Yat-CAShed">仓库</a> ·
+      <a href="https://github.com/donotcryok/Yat-CAShed/blob/main/CHANGELOG.md">更新日志</a> ·
+      <a href="https://github.com/donotcryok/Yat-CAShed/blob/main/CONTRIBUTING.md">贡献指南</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

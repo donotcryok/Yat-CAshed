@@ -6,6 +6,7 @@
 
 | 文档 | 说明 |
 |------|------|
+| [index.html](index.html) | **项目主页**（GitHub Pages 入口）：定位、决策链路、实测结果、快速开始 |
 | [PROJECT_AUDIT.md](PROJECT_AUDIT.md) | **工程化审计快照**：现状评估、问题清单、处理状态（建议先读） |
 | [DIRECTIONS.md](DIRECTIONS.md) | **改进与开发方向建议**：候选方向、收益/成本、推荐路线 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 项目总体架构、模块组成与数据流 |

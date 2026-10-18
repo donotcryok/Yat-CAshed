@@ -17,6 +17,13 @@ Yat-CAShed 基于 AJLR（Allocation of parallel Jobs based on Learned cache Rece
 - **核心算法**：基于 Cache Recency Profile（CRP）预测执行时间，结合 LCIF/MSF 策略做出（作业，核心）分配决策
 - **工程实用性**：完整集成到 Linux 6.8 调度框架，可在 QEMU 中启动验证
 
+## 项目主页
+
+- 🌐 **在线主页**：<https://donotcryok.github.io/Yat-CAShed/>（源码见 [`docs/index.html`](docs/index.html)）
+  内容：项目定位、决策链路、实测结果、快速开始与文档导航。
+  GitHub Pages 的 Source 设为 `main` 分支的 `/docs` 目录即可发布（`docs/.nojekyll` 已就位，
+  不启用 Jekyll，页面为纯静态单文件、无外部依赖）。
+
 ## 文档导航
 
 工程化文档统一收敛在 [`docs/`](docs) 目录，建议按以下顺序阅读：

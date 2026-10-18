@@ -13,6 +13,8 @@ Yat-CAShed/
 ├── .github/workflows/ci.yml     # CI：仓库检查 + 文档链接 + 符号一致性 + 模拟器回放
 │
 ├── docs/                        # 统一文档中心
+│   ├── index.html               #   项目主页（GitHub Pages 入口，单文件无外部依赖）
+│   ├── .nojekyll                #   关闭 Jekyll，保证 index.html 按静态页发布
 │   ├── README.md                #   文档索引
 │   ├── ARCHITECTURE.md          #   项目架构与模块组成
 │   ├── CONFLICT_ANALYSIS.md     #   yat_casched.c 冲突分析与解决记录（已解决：路线 A）
