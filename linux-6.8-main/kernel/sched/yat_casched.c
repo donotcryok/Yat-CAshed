@@ -159,6 +159,86 @@ struct yat_casched_stats {
 	u64 history_records;	/* 写入历史表的执行区间条数 */
 	u64 accel_inserts;	/* 加速表成功插入条数 */
 	u64 accel_dup;		/* 加速表重复条目（EEXIST）次数 */
+
+	/*
+	 * select_task_rq 链路的探针（A8 实测定位用）。
+	 *
+	 * 这几个计数器的唯一目的是回答一个问题：**调度类回调到底有没有被
+	 * 核心调度器调用，如果调用了，又在哪一步退出**。
+	 *
+	 * 背景：core.c 的两处短路会让回调根本不被调用 ——
+	 *   (1) 包装层 `if (p->nr_cpus_allowed > 1)`：任务一旦被 pin 到单个
+	 *       CPU（nr_cpus_allowed == 1），直接 cpumask_any() 返回，回调
+	 *       一行都不会执行；
+	 *   (2) ttwu 快路径：`if (p->on_cpu && ttwu_queue_wakelist(...))`，
+	 *       任务还在别的核上运行时唤醒走 wakelist，select_task_rq() 被
+	 *       整段跳过。
+	 * 只靠 jobs_placed 无法区分「没被调用」和「调用了但早退」，
+	 * 因此下面按退出点逐个计数。
+	 */
+	u64 select_calls;		/* 进入 select_task_rq_yat_casched() */
+	u64 select_not_ttwu;		/* 非唤醒路径（WF_FORK / WF_EXEC）直接返回 */
+	u64 select_nojob;		/* yat_get_or_create_job() 失败 */
+	u64 select_sticky_idle;		/* 节流(a)：上次目标核空闲，复用旧决策 */
+	u64 select_sticky_interval;	/* 节流(b)：距上次决策不足最小间隔 */
+	u64 select_nocore;		/* 扫遍所有核也没有可用核心 */
+	u64 select_decided;		/* 真正跑完 AJLR 并返回新核心 */
+
+	/*
+	 * enqueue 侧探针：用来回答「为什么 select_task_rq 没被调用」。
+	 *
+	 * core.c:3644 的包装层只有在 p->nr_cpus_allowed > 1 时才会转发到
+	 * 调度类回调，否则直接 cpumask_any()。enqueue 是每个任务每次入队
+	 * 必经的路径，在这里采样 nr_cpus_allowed 的**总和**与**次数**，
+	 * 两者的商就是平均可运行 CPU 数：若恒为 1，说明任务被 pin 死了
+	 * （或被 cpuset 限制），select_task_rq 不可能是我们的问题。
+	 */
+	u64 enq_calls;			/* enqueue_task_yat_casched() 调用次数 */
+	u64 enq_cpus_allowed_sum;	/* 上述每次调用时 nr_cpus_allowed 之和 */
+
+	/*
+	 * try_to_wake_up() 探针（A8 实测定位用）。
+	 *
+	 * 只统计「被唤醒的任务属于 yat 调度类」的那些唤醒，因此不会
+	 * 被 guest 里其它 CFS 任务的唤醒稀释。四个计数器恰好覆盖
+	 * try_to_wake_up() 的全部出口：
+	 *   ttwu_state_bail —— p->__state 与请求的 state 不匹配，唤醒被丢弃；
+	 *   ttwu_runnable   —— p->on_rq 仍为真，判定为「可运行」，只做
+	 *                      ttwu_do_wakeup()，**不 enqueue、不 select_task_rq**；
+	 *   ttwu_wakelist   —— 目标核还在 schedule() 里引用 p，投递到
+	 *                      wake_list，稍后由对端核 enqueue（同样不 select）；
+	 *   ttwu_ok         —— 走完 select_task_rq + ttwu_queue 的正常唤醒。
+	 */
+	u64 ttwu_state_bail;
+	u64 ttwu_runnable;
+	u64 ttwu_wakelist;
+	u64 ttwu_ok;
+
+	/*
+	 * pick/dequeue 计数（A8 实测定位用）。
+	 *
+	 * pick_null_desync 是「核心层认为本核有可运行任务，但 yat 类认为
+	 * 队列为空」的次数。两者一旦失步，__pick_next_task() 会一路落到
+	 * idle 类返回 idle 任务 —— CPU 从此空转、任务永远不被调度，而且
+	 * 因为没有唤醒事件，try_to_wake_up() 一次都不会被调用，现象就是
+	 * 「guest 静默挂死、所有 CPU 空闲、ttwu 探针全 0」。
+	 */
+	u64 pick_calls;			/* pick_next_task_yat_casched() 调用次数 */
+	u64 pick_null_desync;		/* yat 队列空但 rq->nr_running > 0 */
+	u64 deq_calls;			/* dequeue_task_yat_casched() 调用次数 */
+	u64 deq_sleep;			/* 其中因阻塞而 dequeue 的次数 */
+
+	/*
+	 * AJLR 接管率（累计值）。
+	 *
+	 * debugfs 的 placements 表是**实时快照**：任务退出时 job 随之释放，
+	 * 所以 workload 结束后表必然是空的。这三个计数器在 pick 时累加，
+	 * 与任务生命周期无关，才是「算法决策最终有没有被内核执行」的
+	 * 可留存证据。
+	 */
+	u64 place_hit;			/* 被选中的任务正好运行在 assigned_cpu 上 */
+	u64 place_miss;			/* 运行核与 assigned_cpu 不一致（决策被否决） */
+	u64 place_pending;		/* 尚未决策（assigned_cpu 无效）仍被选中 */
 };
 
 static DEFINE_PER_CPU(struct yat_casched_stats, yat_stats);
@@ -217,8 +297,70 @@ static int yat_stats_show(struct seq_file *m, void *v)
 	seq_printf(m, "history_records   %llu\n", YAT_STAT_SUM(history_records));
 	seq_printf(m, "accel_inserts     %llu\n", YAT_STAT_SUM(accel_inserts));
 	seq_printf(m, "accel_dup         %llu\n", YAT_STAT_SUM(accel_dup));
+	/*
+	 * select_task_rq 链路（A8）。读法：
+	 *   select_calls == 0                → 核心调度器压根没调用回调，
+	 *                                      检查 nr_cpus_allowed 或 ttwu 快路径；
+	 *   select_calls > 0, select_decided == 0
+	 *                                    → 被调用了，但每次都在节流/无核处退出，
+	 *                                      看 sticky_* / nocore 判断原因；
+	 *   select_decided > 0 但 jobs_placed == 0
+	 *                                    → 计数器放置有误，属于内核 bug。
+	 */
+	seq_printf(m, "select_calls      %llu\n", YAT_STAT_SUM(select_calls));
+	seq_printf(m, "select_not_ttwu   %llu\n", YAT_STAT_SUM(select_not_ttwu));
+	seq_printf(m, "select_nojob      %llu\n", YAT_STAT_SUM(select_nojob));
+	seq_printf(m, "select_sticky_idle %llu\n", YAT_STAT_SUM(select_sticky_idle));
+	seq_printf(m, "select_sticky_intv %llu\n", YAT_STAT_SUM(select_sticky_interval));
+	seq_printf(m, "select_nocore     %llu\n", YAT_STAT_SUM(select_nocore));
+	seq_printf(m, "select_decided    %llu\n", YAT_STAT_SUM(select_decided));
+	seq_printf(m, "enq_calls         %llu\n", YAT_STAT_SUM(enq_calls));
+	seq_printf(m, "enq_cpus_allowed  %llu\n", YAT_STAT_SUM(enq_cpus_allowed_sum));
+	seq_printf(m, "ttwu_state_bail   %llu\n", YAT_STAT_SUM(ttwu_state_bail));
+	seq_printf(m, "ttwu_runnable     %llu\n", YAT_STAT_SUM(ttwu_runnable));
+	seq_printf(m, "ttwu_wakelist     %llu\n", YAT_STAT_SUM(ttwu_wakelist));
+	seq_printf(m, "ttwu_ok           %llu\n", YAT_STAT_SUM(ttwu_ok));
+	seq_printf(m, "pick_calls        %llu\n", YAT_STAT_SUM(pick_calls));
+	seq_printf(m, "pick_null_desync  %llu\n", YAT_STAT_SUM(pick_null_desync));
+	seq_printf(m, "deq_calls         %llu\n", YAT_STAT_SUM(deq_calls));
+	seq_printf(m, "deq_sleep         %llu\n", YAT_STAT_SUM(deq_sleep));
+	seq_printf(m, "place_hit         %llu\n", YAT_STAT_SUM(place_hit));
+	seq_printf(m, "place_miss        %llu\n", YAT_STAT_SUM(place_miss));
+	seq_printf(m, "place_pending     %llu\n", YAT_STAT_SUM(place_pending));
 	seq_printf(m, "nr_cpu_ids        %u\n", nr_cpu_ids);
 	return 0;
+}
+
+/*
+ * try_to_wake_up() 的出口探针。
+ *
+ * 定义在这里而不是 core.c，是为了让计数器与 debugfs 展示共用同一份
+ * per-CPU 存储；core.c 只负责在四个出口各调用一次。
+ *
+ * 只有目标任务是 yat 类的唤醒才计数：否则 guest 里 init/busybox 等
+ * CFS 任务的唤醒会把计数冲到几十万，yat 的那几次被完全淹没。
+ */
+void yat_probe_ttwu(struct task_struct *p, int kind)
+{
+	if (READ_ONCE(p->sched_class) != &yat_casched_sched_class)
+		return;
+
+	switch (kind) {
+	case YAT_TTWU_STATE_BAIL:
+		YAT_STAT_INC(ttwu_state_bail);
+		break;
+	case YAT_TTWU_RUNNABLE:
+		YAT_STAT_INC(ttwu_runnable);
+		break;
+	case YAT_TTWU_WAKELIST:
+		YAT_STAT_INC(ttwu_wakelist);
+		break;
+	case YAT_TTWU_OK:
+		YAT_STAT_INC(ttwu_ok);
+		break;
+	default:
+		break;
+	}
 }
 
 static int yat_stats_open(struct inode *inode, struct file *file)
@@ -1539,8 +1681,12 @@ int select_task_rq_yat_casched(struct task_struct *p, int task_cpu, int flags)
     int prev_core;
     int best_core;
 
-    if (!(flags & WF_TTWU))
+    YAT_STAT_INC(select_calls);
+
+    if (!(flags & WF_TTWU)) {
+        YAT_STAT_INC(select_not_ttwu);
         return task_cpu;
+    }
 
     /*
      * 新建的作业此时还没有任何历史记录，yat_calculate_recency() 全 0，
@@ -1549,8 +1695,10 @@ int select_task_rq_yat_casched(struct task_struct *p, int task_cpu, int flags)
      * 最空闲的核），所以这里**不**跳过首次决策。
      */
     job = yat_get_or_create_job(p);
-    if (!job)
+    if (!job) {
+        YAT_STAT_INC(select_nojob);
         return task_cpu;
+    }
 
     /* 每次唤醒都刷新优先级：sched_setscheduler() 可能改了 sched_priority */
     WRITE_ONCE(job->job_priority, p->rt_priority);
@@ -1568,20 +1716,26 @@ int select_task_rq_yat_casched(struct task_struct *p, int task_cpu, int flags)
         now = ktime_get_ns();
 
         /* (a) 目标核当前空闲：上次的决策依然成立，直接复用 */
-        if (likely(!READ_ONCE(cpu_rq(prev_core)->yat_casched.nr_running)))
+        if (likely(!READ_ONCE(cpu_rq(prev_core)->yat_casched.nr_running))) {
+            YAT_STAT_INC(select_sticky_idle);
             goto out;
+        }
 
         /* (b) 距上次决策还不到最小间隔：保持粘性，避免抖动 */
         last = READ_ONCE(job->last_decision_ns);
-        if (now - last < YAT_DECISION_MIN_INTERVAL_NS)
+        if (now - last < YAT_DECISION_MIN_INTERVAL_NS) {
+            YAT_STAT_INC(select_sticky_interval);
             goto out;
+        }
     } else {
         now = ktime_get_ns();
     }
 
     best_core = yat_find_best_core_for_job(job);
-    if (best_core == YAT_INVALID_CORE)
+    if (best_core == YAT_INVALID_CORE) {
+        YAT_STAT_INC(select_nocore);
         return task_cpu;   /* 保留 task_cpu，通用层会做 is_cpu_allowed 兜底 */
+    }
 
     /*
      * 记录「算法认为该去哪」。这是决策与执行之间唯一的交接点：
@@ -1591,6 +1745,7 @@ int select_task_rq_yat_casched(struct task_struct *p, int task_cpu, int flags)
     WRITE_ONCE(job->assigned_cpu, best_core);
     WRITE_ONCE(job->last_decision_ns, now);
     prev_core = best_core;
+    YAT_STAT_INC(select_decided);
 
 out:
     trace_yat_casched_wakeup_place(p->pid, job->job_id, task_cpu,
@@ -1619,6 +1774,14 @@ void enqueue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
     struct yat_casched_rq *yat_rq = &rq->yat_casched;
 
     /*
+     * 采样 nr_cpus_allowed：只有 >1 时 core.c 才会调用调度类的
+     * select_task_rq()。这里求和的商即平均可运行 CPU 数，是判断
+     * 「A8 没生效」究竟发生在包装层还是回调内部的唯一依据。
+     */
+    YAT_STAT_INC(enq_calls);
+    YAT_STAT_ADD(enq_cpus_allowed_sum, p->nr_cpus_allowed);
+
+    /*
      * 初始化任务的 Yat-CAShed 实体。
      *
      * **不要在这里把 p->yat_casched.job 置 NULL。**
@@ -1640,6 +1803,26 @@ void enqueue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
     list_add_tail(&p->yat_casched.run_list, &yat_rq->tasks);
     yat_rq->nr_running++;
 
+    /*
+     * 必须同时维护核心层的 rq->nr_running。
+     *
+     * 这是一个极易漏掉的集成点：本内核里 add_nr_running()/sub_nr_running()
+     * 并**不是**由 core.c 的 enqueue_task()/dequeue_task() 统一调用的，
+     * 而是由每个调度类在自己的 enqueue/dequeue 实现里调用
+     * （fair.c、rt.c、deadline.c、stop_task.c 都显式调用）。
+     *
+     * 漏掉的后果不是「统计不准」，而是整机静默挂死：
+     *   - __pick_next_task() 的快路径条件是
+     *       rq->nr_running == rq->cfs.h_nr_running
+     *     两者都是 0 时它会直接走 pick_next_task_fair()，**根本不会
+     *     遍历到 yat 类的 pick_next_task**；
+     *   - 于是 CPU 认为本核无任务可跑，掉进 idle；
+     *   - 任务既不在任何唤醒等待中（没有 ttwu 可触发），也不被 pick，
+     *     永久停在 on_rq 状态 —— 现象就是「guest 无输出、所有 CPU 空闲、
+     *     ttwu 探针全 0、jobs_placed 恒 0」。
+     */
+    add_nr_running(rq, 1);
+
     /* AJLR处理：创建或更新作业信息 */
     yat_ajlr_enqueue_task(rq, p, flags);
 }
@@ -1653,9 +1836,15 @@ void dequeue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
 {
     struct yat_casched_rq *yat_rq = &rq->yat_casched;
 
+    YAT_STAT_INC(deq_calls);
+    if (flags & DEQUEUE_SLEEP)
+        YAT_STAT_INC(deq_sleep);
+
     if (!list_empty(&p->yat_casched.run_list)) {
         list_del_init(&p->yat_casched.run_list);
         yat_rq->nr_running--;
+        /* 与 enqueue 侧成对：核心层计数必须同步减一，见 enqueue 处注释 */
+        sub_nr_running(rq, 1);
     }
 
     /* AJLR处理：更新作业状态 */
@@ -1701,8 +1890,22 @@ struct task_struct *pick_next_task_yat_casched(struct rq *rq)
     int fallback_priority = INT_MAX;
     int scanned = 0;
 
-    if (yat_rq->nr_running == 0 || list_empty(&yat_rq->tasks))
+    YAT_STAT_INC(pick_calls);
+
+    if (yat_rq->nr_running == 0 || list_empty(&yat_rq->tasks)) {
+        /*
+         * 核心层的 rq->nr_running 与本类的 nr_running 应当同步增减。
+         * 若这里发现「核心层说有任务、本类说没有」，说明有一次 enqueue
+         * 或 dequeue 只走了一边 —— 任务会永久留在 on_rq 状态却永远不会
+         * 被 pick，表现为整机静默空转（没有唤醒事件，ttwu 探针全 0）。
+         */
+        if (rq->nr_running) {
+            YAT_STAT_INC(pick_null_desync);
+            printk_deferred("YATPICKNUL cpu=%d core_nr=%u yat_nr=%u\n",
+                            rq->cpu, rq->nr_running, yat_rq->nr_running);
+        }
         return NULL;
+    }
 
     {
         struct list_head *pos;
@@ -1750,6 +1953,25 @@ struct task_struct *pick_next_task_yat_casched(struct rq *rq)
     }
 
     if (p) {
+        /*
+         * 累计接管率：把「AJLR 说去哪」与「实际在哪个核被选中」对齐统计。
+         * 这是 placements 快照之外唯一可留存的证据（任务退出后 job 会被释放）。
+         */
+        {
+            struct yat_job *pj = READ_ONCE(p->yat_casched.job);
+
+            if (pj) {
+                int a = READ_ONCE(pj->assigned_cpu);
+
+                if (a == YAT_INVALID_CORE)
+                    YAT_STAT_INC(place_pending);
+                else if (a == rq->cpu)
+                    YAT_STAT_INC(place_hit);
+                else
+                    YAT_STAT_INC(place_miss);
+            }
+        }
+
         p->yat_casched.last_cpu = rq->cpu;
 
         /*

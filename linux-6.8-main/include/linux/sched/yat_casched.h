@@ -15,6 +15,23 @@ enum yat_job_state {
     YAT_JOB_COMPLETED
 };
 
+/*
+ * try_to_wake_up() 出口探针。
+ *
+ * core.c 在 try_to_wake_up() 的每个出口处调用 yat_probe_ttwu()，实现位于
+ * kernel/sched/yat_casched.c（只有目标是 yat 类的唤醒才会被计数）。
+ * 这四个出口穷尽了「一次唤醒为什么不生效」的全部可能，是 A8 实测定位
+ * 的核心手段：只看 jobs_placed 无法区分「唤醒被丢弃」与「唤醒了但没选核」。
+ */
+enum yat_ttwu_probe {
+    YAT_TTWU_STATE_BAIL = 0,    /* p->__state 与请求 state 不匹配，唤醒被丢弃 */
+    YAT_TTWU_RUNNABLE,          /* p->on_rq 为真：只做 wakeup，不 enqueue/不选核 */
+    YAT_TTWU_WAKELIST,          /* 目标核仍在 schedule() 中，投递到 wake_list */
+    YAT_TTWU_OK,                /* 正常路径：select_task_rq + ttwu_queue */
+};
+
+void yat_probe_ttwu(struct task_struct *p, int kind);
+
 /* 加速表哈希位数 (2^8 = 256个桶，用于(task,cpu)组合) */
 #define YAT_ACCEL_HASH_BITS    8
 /* 历史表哈希位数 (2^7 = 128个桶，用于时间戳) */

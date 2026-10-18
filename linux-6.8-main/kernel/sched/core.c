@@ -2170,8 +2170,29 @@ static inline int __normal_prio(int policy, int rt_prio, int nice)
 	else if (rt_policy(policy))
 		prio = MAX_RT_PRIO - 1 - rt_prio;
 #ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+	/*
+	 * Yat-CASched 是「在 CFS 之上」的一个普通（non-RT）调度类，
+	 * sched_priority 0..19 是 AJLR 的作业优先级，存放在
+	 * p->rt_priority 里供 select_task_rq_yat_casched() 使用。
+	 *
+	 * **这里绝不能把 p->prio 设成 rt_priority 本身。**
+	 * 原实现 `prio = rt_prio` 在 sched_priority=0 时得到 prio=0，
+	 * 而 0 落在实时区间（rt_prio(0) 为真），于是：
+	 *   - __setscheduler_prio() 的 `else if (rt_prio(prio))` 分支
+	 *     抢先命中，任务被挂进 rt_sched_class，yat 调度类一个任务
+	 *     都没有 —— 表现为 select_task_rq_yat_casched() 从不被调用、
+	 *     placements 恒为空；
+	 *   - sched_fork() 同样按 prio 重设子任务的 sched_class，子任务
+	 *     也会被判成 RT；
+	 *   - rt_mutex PI、cpupri 等按 rt_prio(p->prio) 判定的路径也会
+	 *     误以为这是实时任务。
+	 *
+	 * 因此把 AJLR 优先级映射到普通区间的高端（100..119），既不与
+	 * 实时区间重叠，又保留了 0..19 的相对顺序（数值越大优先级越低，
+	 * 与 CFS nice 的语义方向一致）。
+	 */
 	else if (yat_casched_policy(policy))
-		prio = rt_prio;  /* 直接使用设置的优先级 */
+		prio = MAX_RT_PRIO + rt_prio;
 #endif
 	else
 		prio = NICE_TO_PRIO(nice);
@@ -4258,8 +4279,12 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	 */
 	scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
 		smp_mb__after_spinlock();
-		if (!ttwu_state_match(p, state, &success))
+		if (!ttwu_state_match(p, state, &success)) {
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+			yat_probe_ttwu(p, YAT_TTWU_STATE_BAIL);
+#endif
 			break;
+		}
 
 		trace_sched_waking(p);
 
@@ -4286,8 +4311,12 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 		 * A similar smp_rmb() lives in __task_needs_rq_lock().
 		 */
 		smp_rmb();
-		if (READ_ONCE(p->on_rq) && ttwu_runnable(p, wake_flags))
+		if (READ_ONCE(p->on_rq) && ttwu_runnable(p, wake_flags)) {
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+			yat_probe_ttwu(p, YAT_TTWU_RUNNABLE);
+#endif
 			break;
+		}
 
 #ifdef CONFIG_SMP
 		/*
@@ -4343,8 +4372,12 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 		 * scheduling.
 		 */
 		if (smp_load_acquire(&p->on_cpu) &&
-		    ttwu_queue_wakelist(p, task_cpu(p), wake_flags))
+		    ttwu_queue_wakelist(p, task_cpu(p), wake_flags)) {
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+			yat_probe_ttwu(p, YAT_TTWU_WAKELIST);
+#endif
 			break;
+		}
 
 		/*
 		 * If the owning (remote) CPU is still in the middle of schedule() with
@@ -4375,8 +4408,12 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 		ttwu_queue(p, cpu, wake_flags);
 	}
 out:
-	if (success)
+	if (success) {
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+		yat_probe_ttwu(p, YAT_TTWU_OK);
+#endif
 		ttwu_stat(p, task_cpu(p), wake_flags);
+	}
 
 	return success;
 }
@@ -4799,6 +4836,17 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 
 	if (dl_prio(p->prio))
 		return -EAGAIN;
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+	/*
+	 * 子任务继承父任务的调度类。上游这里只按 prio 区间在 RT/CFS 之间
+	 * 二选一，对自定义的普通调度类是错的：yat 任务 fork 出的子任务会
+	 * 被降级成 CFS，此后既不走 yat 的 enqueue/select_task_rq，也让
+	 * 「同族任务同策略」的前提失效。策略写在 p->policy 上（fork 已
+	 * 继承），这里按策略判定即可。
+	 */
+	else if (yat_casched_policy(p->policy))
+		p->sched_class = &yat_casched_sched_class;
+#endif
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
 	else
@@ -7078,12 +7126,18 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
 {
 	if (dl_prio(prio))
 		p->sched_class = &dl_sched_class;
-	else if (rt_prio(prio))
-		p->sched_class = &rt_sched_class;
 #ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+	/*
+	 * 必须排在 rt_prio() 之前判断：yat 策略下 prio 由 __normal_prio()
+	 * 映射到普通区间，但这里的判定不应依赖调用方送进来的 prio 落在
+	 * 哪个区间 —— 策略才是唯一的真相来源。顺序颠倒会让 yat 任务被
+	 * 静默塞进 rt_sched_class（A8 实测踩到过，见 __normal_prio 注释）。
+	 */
 	else if (yat_casched_policy(p->policy))
 		p->sched_class = &yat_casched_sched_class;
 #endif
+	else if (rt_prio(prio))
+		p->sched_class = &rt_sched_class;
 	else
 		p->sched_class = &fair_sched_class;
 
