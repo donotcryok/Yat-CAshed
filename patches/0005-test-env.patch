@@ -2141,7 +2141,7 @@ Upstream: linux v6.8 (torvalds)
 +echo "- 观察调度器行为时注意进程的 CPU 使用率分布"
 --- /dev/null
 +++ b/yat_test_scripts/quick_test_guide.sh
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,70 @@
 +#!/bin/bash
 +
 +echo "=== Yat-CAShed 调度器改动验证快速指南 ==="
@@ -2155,7 +2155,13 @@ Upstream: linux v6.8 (torvalds)
 +
 +echo "1️⃣ 启动测试环境"
 +echo "cd <内核源码根>/yat_test_scripts"
-+echo "qemu-system-x86_64 -nographic -m 1024 -kernel ../vmlinux -initrd test_with_programs.cpio.gz -append \"console=ttyS0,115200\" -accel tcg"
++echo "./start_test_environment.sh          # 推荐：自动检查 bzImage / initramfs，默认 4 核"
++echo "# 或手工："
++echo "qemu-system-x86_64 -nographic -m 1024 -smp 4 \\"
++echo "    -kernel ../arch/x86/boot/bzImage -initrd test_with_programs.cpio.gz \\"
++echo "    -append \"console=ttyS0,115200 panic=1 nokaslr\" -accel tcg"
++echo "# 注意：必须用 bzImage（vmlinux 缺 PVH note 无法 -kernel 启动）；"
++echo "#       不要加 acpi=off/noapic/nolapic，否则 guest 只有 1 个 CPU。"
 +echo ""
 +
 +echo "2️⃣ 验证调度器初始化（必做）"
@@ -2208,7 +2214,7 @@ Upstream: linux v6.8 (torvalds)
 +echo "在虚拟机中输入 'exit'，然后按 Ctrl+A 再按 X"
 --- /dev/null
 +++ b/yat_test_scripts/start_qemu_simple.sh
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,111 @@
 +#!/bin/bash
 +
 +# Yat-CAShed 快速测试脚本
@@ -2290,10 +2296,17 @@ Upstream: linux v6.8 (torvalds)
 +    echo "✅ initramfs 创建完成"
 +fi
 +
++# 内核镜像必须是 bzImage：ELF 的 vmlinux 缺少 Xen PVH note，QEMU 无法直接启动。
++KERNEL_IMAGE="arch/x86/boot/bzImage"
++if [ ! -f "$KERNEL_IMAGE" ]; then
++    echo "❌ 找不到 $KERNEL_IMAGE，请先执行：make -j\"\$(nproc)\" bzImage"
++    exit 1
++fi
++
 +echo ""
 +echo "🚀 启动 QEMU 虚拟机..."
-+echo "   - 内核: vmlinux"
-+echo "   - 内存: 1024MB"
++echo "   - 内核: $KERNEL_IMAGE"
++echo "   - 内存: 1024MB    CPU 核心: 4"
 +echo "   - 加速: TCG"
 +echo "   - 串口: ttyS0"
 +echo ""
@@ -2301,12 +2314,17 @@ Upstream: linux v6.8 (torvalds)
 +echo ""
 +
 +# 启动 QEMU
++# 注意：不要加 acpi=off / noapic / nolapic，也不要漏掉 -smp。
++# -kernel bzImage 绕过 BIOS，AP 只能靠 ACPI MADT 枚举；关掉 ACPI 后 guest
++# 只会看到 1 个 CPU，任何跨核调度观察都会失真。
 +qemu-system-x86_64 \
 +    -nographic \
 +    -m 1024 \
-+    -kernel vmlinux \
++    -smp 4 \
++    -kernel "$KERNEL_IMAGE" \
 +    -initrd test_static.cpio.gz \
-+    -append "console=ttyS0,115200 noapic acpi=off quiet" \
++    -no-reboot \
++    -append "console=ttyS0,115200 panic=1 nokaslr quiet" \
 +    -accel tcg
 --- /dev/null
 +++ b/yat_test_scripts/start_qemu_yat_test.sh
@@ -2368,7 +2386,7 @@ Upstream: linux v6.8 (torvalds)
 +    -m 2G \
 +    -kernel "$KERNEL_IMAGE" \
 +    -initrd "$INITRAMFS_IMAGE" \
-+    -append "console=ttyS0,115200 noapic acpi=off rdinit=/init panic=1 loglevel=7 maxcpus=4" \
++    -append "console=ttyS0,115200 rdinit=/init panic=1 loglevel=7" \
 +    -nographic \
 +    -no-reboot
 +
@@ -2376,46 +2394,85 @@ Upstream: linux v6.8 (torvalds)
 +echo "QEMU 测试环境已关闭。"
 --- /dev/null
 +++ b/yat_test_scripts/start_test_environment.sh
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,78 @@
 +#!/bin/bash
++#
++# 一键启动「交互式」Yat-CAShed 测试环境（进 shell 手动跑命令、看 proc/debugfs）。
++#
++# 注意与 compare_cfs_vs_yat.sh 的分工：
++#   - 本脚本 = 交互式探索，guest 里手动敲命令；
++#   - compare_cfs_vs_yat.sh = 出数据（两个独立 QEMU 进程、自动落 CSV）。
++#
++# 两个曾经踩过的坑（本脚本已避开，勿回退）：
++#   1) -kernel 必须指向 arch/x86/boot/bzImage。ELF 的 vmlinux 缺少 Xen PVH note，
++#      QEMU 会报 "Error loading uncompressed kernel without PVH ELF Note"。
++#   2) 不要加 acpi=off / noapic / nolapic，也不要漏掉 -smp。
++#      -kernel bzImage 绕过了 BIOS，AP 只能靠 ACPI MADT 枚举；
++#      关掉 ACPI 或默认 -smp 1 时 guest 只会看到 1 个 CPU，
++#      此时任何「调度策略对比」都没有意义。
++#
++# 用法：
++#   ./start_test_environment.sh          # 默认 4 核
++#   SMP=2 ./start_test_environment.sh    # 指定核数
++# 退出：guest 内 exit，然后 Ctrl+A 再按 X。
 +
-+echo "=== Yat-CAShed 测试环境启动脚本 ==="
++set -u
++
++SMP="${SMP:-4}"
++
++echo "=== Yat-CAShed 测试环境（交互式） ==="
 +echo ""
 +
 +# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
 +KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-+cd "$KERNEL_DIR"
++cd "$KERNEL_DIR" || exit 1
 +
-+# 检查内核文件
-+if [ ! -f "vmlinux" ]; then
-+    echo "❌ 错误: 找不到内核文件 vmlinux"
-+    echo "请先编译内核：make -j$(nproc)"
++# 检查内核文件：优先 bzImage，缺失时给出明确的编译命令
++KERNEL_IMAGE="arch/x86/boot/bzImage"
++if [ ! -f "$KERNEL_IMAGE" ]; then
++    echo "❌ 找不到 $KERNEL_IMAGE"
++    echo "   请先编译内核：make -j\"\$(nproc)\" bzImage"
++    echo "   （只改调度器时可先跑 make kernel/sched/yat_casched.o 做快速检查）"
 +    exit 1
 +fi
 +
-+# 检查测试程序版本的 initramfs
-+if [ ! -f "test_with_programs.cpio.gz" ]; then
-+    echo "🔧 创建包含测试程序的 initramfs..."
-+    cd yat_test_scripts
-+    ./create_test_initramfs.sh
-+    cd ..
++# 检查/生成 initramfs（由 create_test_initramfs.sh 产出，内含各测试程序）
++OUT_IMAGE="test_with_programs.cpio.gz"
++if [ ! -f "$OUT_IMAGE" ]; then
++    echo "🔧 未找到 $OUT_IMAGE，正在生成..."
++    ( cd yat_test_scripts && ./create_test_initramfs.sh ) || {
++        echo "❌ initramfs 生成失败"
++        exit 1
++    }
 +fi
 +
-+echo "🚀 启动包含测试程序的 Yat-CAShed 测试环境"
-+echo "   - 内核: vmlinux"
-+echo "   - 初始化文件系统: test_with_programs.cpio.gz (包含测试程序)"
-+echo "   - 内存: 1024MB"
++if [ ! -f "$OUT_IMAGE" ]; then
++    echo "❌ 仍未找到 $OUT_IMAGE（路径：$KERNEL_DIR/$OUT_IMAGE）"
++    exit 1
++fi
++
++echo "🚀 启动 QEMU"
++echo "   - 内核:     $KERNEL_IMAGE"
++echo "   - initramfs:$OUT_IMAGE"
++echo "   - CPU:      smp=$SMP（不要设为 1，否则测不出任何跨核行为）"
++echo "   - 内存:     1024MB"
 +echo ""
-+echo "💡 提示："
-+echo "   - 启动后运行: test_yat_core_functions"
-+echo "   - 然后运行: test_yat_hash_operations"
-+echo "   - 退出: 在虚拟机中输入 'exit'，然后按 Ctrl+A 再按 X"
++echo "💡 guest 内可直接运行："
++echo "   - /bin/yat_simple_test     功能冒烟（历史表/加速表/作业生命周期）"
++echo "   - /bin/yat_bench --help    负载基准（参数：--policy/--tasks/--iters/--affinity/--sleep-us）"
++echo "   - cat /sys/kernel/debug/yat_casched/stats   调度类计数器"
++echo "   - 退出：exit → Ctrl+A → X"
 +echo ""
 +
-+# 启动QEMU
-+echo "SeaBIOS (version 1.16.3-debian-1.16.3-2)" > /dev/null 2>&1
-+
-+qemu-system-x86_64 -nographic -m 1024 -kernel vmlinux -initrd test_with_programs.cpio.gz -append "console=ttyS0,115200 noapic nolapic acpi=off" -accel tcg
++qemu-system-x86_64 \
++    -nographic \
++    -m 1024 \
++    -smp "$SMP" \
++    -kernel "$KERNEL_IMAGE" \
++    -initrd "$OUT_IMAGE" \
++    -no-reboot \
++    -accel tcg \
++    -append "console=ttyS0,115200 panic=1 nokaslr"
 --- /dev/null
 +++ b/yat_test_scripts/start_yat_simple_test.sh
 @@ -0,0 +1,61 @@
@@ -2474,7 +2531,7 @@ Upstream: linux v6.8 (torvalds)
 +    -smp 4 \
 +    -nographic \
 +    -no-reboot \
-+    -append "console=ttyS0 panic=1 nokaslr noapic acpi=off" \
++    -append "console=ttyS0 panic=1 nokaslr" \
 +    2>&1 | tee "$LOG_FILE"
 +
 +echo ""

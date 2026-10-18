@@ -53,7 +53,7 @@ qemu-system-x86_64 \
     -smp 4 \
     -nographic \
     -no-reboot \
-    -append "console=ttyS0 panic=1 nokaslr noapic acpi=off" \
+    -append "console=ttyS0 panic=1 nokaslr" \
     2>&1 | tee "$LOG_FILE"
 
 echo ""

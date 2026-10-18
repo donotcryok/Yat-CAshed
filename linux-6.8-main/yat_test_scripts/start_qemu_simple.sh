@@ -79,10 +79,17 @@ EOF
     echo "✅ initramfs 创建完成"
 fi
 
+# 内核镜像必须是 bzImage：ELF 的 vmlinux 缺少 Xen PVH note，QEMU 无法直接启动。
+KERNEL_IMAGE="arch/x86/boot/bzImage"
+if [ ! -f "$KERNEL_IMAGE" ]; then
+    echo "❌ 找不到 $KERNEL_IMAGE，请先执行：make -j\"\$(nproc)\" bzImage"
+    exit 1
+fi
+
 echo ""
 echo "🚀 启动 QEMU 虚拟机..."
-echo "   - 内核: vmlinux"
-echo "   - 内存: 1024MB"
+echo "   - 内核: $KERNEL_IMAGE"
+echo "   - 内存: 1024MB    CPU 核心: 4"
 echo "   - 加速: TCG"
 echo "   - 串口: ttyS0"
 echo ""
@@ -90,10 +97,15 @@ echo "💡 提示: 要退出 QEMU，请在虚拟机中输入 'exit'，然后按 
 echo ""
 
 # 启动 QEMU
+# 注意：不要加 acpi=off / noapic / nolapic，也不要漏掉 -smp。
+# -kernel bzImage 绕过 BIOS，AP 只能靠 ACPI MADT 枚举；关掉 ACPI 后 guest
+# 只会看到 1 个 CPU，任何跨核调度观察都会失真。
 qemu-system-x86_64 \
     -nographic \
     -m 1024 \
-    -kernel vmlinux \
+    -smp 4 \
+    -kernel "$KERNEL_IMAGE" \
     -initrd test_static.cpio.gz \
-    -append "console=ttyS0,115200 noapic acpi=off quiet" \
+    -no-reboot \
+    -append "console=ttyS0,115200 panic=1 nokaslr quiet" \
     -accel tcg
