@@ -4,7 +4,7 @@ Upstream: linux v6.8 (torvalds)
 
 --- /dev/null
 +++ b/yat_casched优化记录.md
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,297 @@
 +# YAT_CASCHED调度器优化记录
 +
 +> 本文档用于记录每次对YAT_CASCHED调度器的优化及效果，后续所有优化均在此更新。
@@ -242,6 +242,58 @@ Upstream: linux v6.8 (torvalds)
 +  - 支持0-19的优先级范围，无需特殊权限
 +  - 优先级正确传递到调度实体，实现真正的优先级调度
 +  - 用户可以在测试程序中自由设置不同优先级的YAT_CASCHED任务
++
++---
++
++## A8 实跑：让调度类真正接管任务（2026-10）
++
++接线完成后第一次实跑，guest **静默挂死**：串口无输出、四个 vCPU 全部 idle、
++`jobs_placed` 恒 0。逐层加 per-CPU 探针（`select_*` / `ttwu_*` / `pick_*` / `deq_*`）
++配合 QEMU gdbstub 读取运行态计数器，定位到四个致命缺陷——**都不在 AJLR 算法里，
++而在「调度类接入内核」的工程细节上**：
++
++1. **`__normal_prio()`（core.c）**：yat 策略返回 `prio = rt_priority`，
++   `sched_priority = 0` 时得到 `prio = 0`，而 `rt_prio(0)` 为真 →
++   `__setscheduler_prio()` 的实时分支抢先命中，任务被挂进 `rt_sched_class`，
++   **yat 类里一个任务都没有**。改为 `MAX_RT_PRIO + rt_priority`（100..119）。
++2. **`__setscheduler_prio()`（core.c）**：yat 分支排在 `rt_prio()` 之后，
++   策略被 prio 区间覆盖。把「按 `p->policy` 判定」提到 `rt_prio()` 之前。
++3. **`sched_fork()`（core.c）**：只按 prio 在 RT/CFS 间二选一，
++   yat 任务 fork 出的子任务被降级成 CFS。补上 `yat_casched_policy()` 分支。
++4. **`enqueue/dequeue_task_yat_casched()`**：只维护 `yat_rq->nr_running`，
++   未调用 `add_nr_running()/sub_nr_running()`。本内核中这两个函数由
++   **各调度类自己**调用（`fair.c` / `rt.c` / `deadline.c` / `stop_task.c` 均如此）。
++   漏掉后 `rq->nr_running` 恒 0 → `__pick_next_task()` 快路径判定
++   `rq->nr_running == cfs.h_nr_running == 0` → **根本不遍历 yat 类** →
++   CPU 直接进 idle，任务永久停在 `on_rq` 却永不运行（静默挂死）。
++
++**可观测性**：`stats` 由 7 项扩到 27 项，覆盖整条决策链路：
++
++```
++enq_calls ─► ttwu_* ─► select_* ─► jobs_placed ─► place_*
++（进类了吗）（唤醒到哪）（回调到哪）（算出来了吗）（执行了吗）
++```
++
++新增 `place_hit/place_miss/place_pending`（pick 时比对 `assigned_cpu` 与运行核）。
++之所以不直接看 `placements`：它是实时快照，任务退出时 job 被 `.task_dead` 释放，
++workload 结束后必然为空。
++
++**实测**（8 任务 / 4 核 / 2M 迭代 / 200µs 唤醒，smp=4）：
++
++| 指标 | 值 |
++|------|-----|
++| `ttwu_ok` | 512（= 8 × 64，与负载完全吻合） |
++| `select_calls` / `select_decided` | 459 / 254 |
++| `jobs_placed` | 254 |
++| `place_hit / miss / pending` | **925 / 0 / 14 → 接管率 98%** |
++| `pick_null_desync` | 0 |
++| `sum_wall` 比（yat/cfs） | **约 1.9–2.2×（yat 更慢）** |
++
++**结论**：AJLR 确实接管了选核；但当前实现明显慢于 CFS。
++一次尝试（把 `wakeup_preempt` 从无条件 `resched` 改为按优先级抢占）经
++3 次重复取中位数后**没有收益，已回退**——本负载每任务主动 sleep 64 次，
++每次唤醒本就对应一次调度，切换不是抖动；主要开销在 O(nr_cpus²) 的
++recency 扫描与 TCG 放大的切换成本上，属后续 D1' 范围。
 +
 +---
 +
