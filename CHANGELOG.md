@@ -66,11 +66,16 @@ guest **静默挂死**（串口无输出、4 个 vCPU 全部 idle、`jobs_placed
 
 ### 已知遗留（Known Issues）
 
-- **性能尚未胜过 CFS**（1.94×）。原因是设计代价而非算法失败：
+- **性能尚未胜过 CFS**（约 1.9–2.2×）。原因是设计代价而非算法失败：
   `wakeup_preempt_yat_casched()` 无条件 `resched_curr()`、`pick_next_task` 每次 O(n) 扫描、
   `yat_find_best_core_for_job()` 是 O(nr_cpus²) 历史表扫描，且 TCG 放大了切换成本。
   这些正是 D1'（真实硬件代价模型）的输入。
 - 本轮数据只能证明「AJLR 已真实接管选核」，**不能**用来声称性能收益。
+- **一次被数据否决的优化**：把 `wakeup_preempt_yat_casched()` 从无条件
+  `resched_curr()` 改为按 `job_priority` 按需抢占，各跑 3 次取中位数后
+  `sum_wall` 反而由 3.769e9 升到 3.989e9（+5.8%），已回退。
+  原因：本负载每任务 64 次主动 sleep，每次唤醒本就需要一次调度
+  （`pick_calls ≈ 唤醒数 + 入队数`），切换不是抖动。详见 ROADMAP §A8.2。
 - 探针计数器长期保留（per-CPU 单指令自增，代价可忽略），便于后续回归时直接读取。
 
 ---
