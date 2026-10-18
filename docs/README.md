@@ -12,6 +12,7 @@
 | [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) | `yat_casched.c` 合并冲突分析与解决记录（已按路线 A 解决） |
 | [ROADMAP.md](ROADMAP.md) | 任务化改进清单（优先级 P0–P3 + 执行顺序） |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发环境、构建与测试指南 |
+| [OPERATIONS.md](OPERATIONS.md) | **操作手册**：改完代码后怎么编译、怎么验证 A8、怎么读计数器、怎么发补丁（照着敲即可） |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | `simulator/lib/` 依赖审计报告（使用/未使用清单 + 建议） |
 | [EXPERIMENT_REPORT.md](EXPERIMENT_REPORT.md) | 模拟器实验报告（WFD vs CacheAware_v2：设计、统计、图表、局限、复现） |
 | [SCHEMA.md](SCHEMA.md) | 数据与产物格式约定：CSV 列定义 / schema 版本 / 图表命名 / 变更规则 |
@@ -19,6 +20,7 @@
 | [archive/README.md](archive/README.md) | 归档目录说明与政策 |
 
 > 阅读顺序建议：`PROJECT_AUDIT` → `ARCHITECTURE` → `DIRECTIONS` → `ROADMAP` → `DEVELOPMENT`。
+> 若要**动手执行**（编译 / 跑 QEMU / 出数据 / 发补丁），直接看 [`OPERATIONS.md`](OPERATIONS.md)。
 
 ## 仓库级文档（项目根目录）
 

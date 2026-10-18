@@ -18,6 +18,7 @@ Yat-CAShed/
 │   ├── CONFLICT_ANALYSIS.md     #   yat_casched.c 冲突分析与解决记录（已解决：路线 A）
 │   ├── ROADMAP.md               #   改进与开发方向（优先级 + 执行顺序）
 │   ├── DEVELOPMENT.md           #   环境/构建/测试指南
+│   ├── OPERATIONS.md            #   操作手册（编译 / 验证 A8 / 读计数器 / 发补丁）
 │   ├── EXPERIMENT_REPORT.md     #   模拟器 WFD vs CacheAware_v2 实验报告
 │   ├── SCHEMA.md                #   CSV schema / 图表命名 / 变更规则
 │   ├── DEPENDENCIES.md          #   simulator/lib 依赖审计

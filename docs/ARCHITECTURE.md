@@ -216,7 +216,7 @@ Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.ba
 | P8 | 调度类顺序依赖 `vmlinux.lds.h` 手工插段，脆弱 | `vmlinux.lds.h:135` | ✅ 已加 `#ifdef` 条件编译，未启用时不插入空段 |
 | P9 | A5 静态审查发现的锁序/TOCTOU/UAF/原子上下文分配问题 | `yat_casched.c` | ✅ 已逐条修复（详见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §8.7 与 ROADMAP A5） |
 | P10 | debugfs `_show` 用普通 `spin_lock()` 读 irq-safe 锁 | `yat_casched.c` 三个 `_show` | ✅ **实跑 lockdep 报出真实死锁，已改 `spin_lock_irqsave`** |
-| P11 | `printk` 散落、无法观测内部状态 | `yat_casched.c` | ✅ A6：6 个 tracepoint + 4 个 debugfs 节点 + 7 项 per-CPU 计数 |
+| P11 | `printk` 散落、无法观测内部状态 | `yat_casched.c` | ✅ A6：6 个 tracepoint + 4 个 debugfs 节点 + per-CPU 计数（A8 后扩到 27 项，覆盖整条决策链路） |
 | P12 | 测试目录职责混用、缺少 CFS vs Yat 自动对比 | `boot_test_scripts/`、`yat_test_scripts/` | ✅ A7：目录物理隔离 + `yat_bench.c` + `compare_cfs_vs_yat.sh` |
 | P13 | **AJLR 决策不落地**：算出的放置只写进 debugfs 数字，主调度路径无人采纳（`jobs_placed` 恒 0） | `select_task_rq` / `pick_next_task` / `task_dead` | ✅ 已接线：`select_task_rq` 真正选核 + `assigned_cpu` 参与 pick + `.task_dead` 释放（见 §3.2.1） |
 | P14 | 唤醒路径作业泄漏：每次 `enqueue_task` 新建 `yat_job` 并覆盖旧指针，旧作业永不释放 | `yat_ajlr_enqueue_task()` | ✅ 改为 `yat_get_or_create_job()` 复用 + `.task_dead` 精确释放 |
@@ -226,7 +226,7 @@ Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.ba
 | 问题 | 说明 |
 |------|------|
 | ~~AJLR 就绪池未接入主调度路径~~ | ✅ **已关闭（P13）**。原状：`yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`、不插入 `global_ready_pool`，而 `pick_next_task_yat_casched()` 从 `rq->yat_casched.tasks` 选任务，于是 `jobs_placed` / `history_records` / `accel_inserts` 常为 0。现由 `select_task_rq` 承担「全局放置」职责；就绪池仍只服务显式 DAG 路径，这是**有意的分工**——隐式任务作业不应被本地队列与全局池重复决策（见 `yat_update_ready_pool()` 的跳过条件）。 |
-| AJLR 接管率尚未实测 | 新增的 `placements` 节点与 `_wakeup_place` tracepoint 已就位，但 `ok/denied/pending` 与 `(stay)/(migrate)` 的真实分布需在 `make kernel-compare` 里跑出。ROADMAP §1 的 CFS-vs-Yat 时间数据必须继续标注为「调度类切换本身的效果，非 AJLR 效果」。 |
+| ~~AJLR 接管率尚未实测~~ | ✅ **已关闭（A8.1）**。实跑数据：`ttwu_ok 512 / select_decided 254 / jobs_placed 254 / place_hit 925 · miss 0 · pending 14` → 接管率 **98%**。同时必须坚持的限定：`placements` 是实时快照（任务退出即空），可留存证据是 `place_hit/miss/pending` 累计值；CFS-vs-Yat 的墙钟差异仍**不能**当作 AJLR 的收益（当前实现反而慢约 1.9–2.2×，见 [ROADMAP.md](ROADMAP.md) §A8.1–A8.2）。 |
 | 决策节流常数未标定 | `YAT_DECISION_MIN_INTERVAL_NS = 1 ms` 是经验值；最优值依赖 D1' 的真实硬件代价模型。 |
 
 ### 5.2 已收敛的 P1 文档治理项（本轮关闭）

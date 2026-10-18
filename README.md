@@ -29,6 +29,7 @@ Yat-CAShed 基于 AJLR（Allocation of parallel Jobs based on Learned cache Rece
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 系统架构与模块说明 |
 | [`docs/DIRECTORY.md`](docs/DIRECTORY.md) | 目录结构详解 |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | 环境搭建与构建指南 |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | **操作手册**（编译 / 验证 A8 / 读计数器 / 发补丁，照着敲即可） |
 | [`docs/CONFLICT_ANALYSIS.md`](docs/CONFLICT_ANALYSIS.md) | 合并冲突分析与解决记录（已按路线 A 解决） |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 任务化改进清单（P0–P3） |
 | [`docs/EXPERIMENT_REPORT.md`](docs/EXPERIMENT_REPORT.md) | 模拟器实验报告（指标 / 统计 / 复现） |
@@ -160,21 +161,26 @@ make -C simulator picture   # 单独生成可视化图表（需 Python + matplot
 > 内核编译需在 Linux 环境（或 WSL）下进行，Windows 无法完整检出部分 Linux 专属文件名。
 
 ```bash
-cd linux-6.8-main
+# 0) 最快的语法/类型检查（只编调度器目标文件，约 1 分钟）
+make kernel-obj
 
-# 启用 Yat-CAShed 调度类
-scripts/config --enable CONFIG_SCHED_CLASS_YAT_CASCHED
+# 1) 编译内核（产物 arch/x86/boot/bzImage）
+make kernel-build
 
-# 编译内核
-make -j$(nproc)
-
-# 使用 QEMU 快速验证
-cd yat_test_scripts
-./create_test_initramfs.sh
-./start_test_environment.sh
+# 2) 验证 A8：AJLR 是否真的接管了选核
+#    两个参数缺一不可：none（可跨核）+ sleep-us（制造 WF_TTWU）
+linux-6.8-main/yat_test_scripts/compare_cfs_vs_yat.sh \
+    --tasks 8 --iters 2000000 --affinity none --sleep-us 200 --timeout 300
 ```
 
-用户态测试程序位于 [`boot_test_scripts/`](linux-6.8-main/boot_test_scripts)，性能对比与可视化见 [`test_visualization/`](linux-6.8-main/test_visualization)。
+实测基线（8 任务 / 4 核 / 2M 迭代 / 200µs 唤醒）：`ttwu_ok 512`、
+`select_decided 254`、`jobs_placed 254`、`place_hit 925 / miss 0 / pending 14`
+→ **接管率 98%**；但墙钟约为 CFS 的 **1.9–2.2 倍**，即「AJLR 已生效、性能尚未站住」。
+
+完整的命令清单、计数器读法与故障排查见
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md)；测试脚本参数见
+[`linux-6.8-main/yat_test_scripts/README.md`](linux-6.8-main/yat_test_scripts/README.md)。
+用户态测试程序位于 [`boot_test_scripts/`](linux-6.8-main/boot_test_scripts)。
 
 ## 仓库健康检查
 
@@ -188,7 +194,7 @@ make verify-all   # 以上 + 模拟器全套验证（CI 等价）
 - [`scripts/check_repo.sh`](scripts/check_repo.sh)：冲突标记、空文件、关键文件守卫
 - [`scripts/check_docs.py`](scripts/check_docs.py)：全仓库自维护 Markdown 的相对链接检查
 - [`scripts/check_symbols.sh`](scripts/check_symbols.sh)：核对 `yat_casched.h` 声明与 `yat_casched.c` 定义
-  （当前 26 个声明 / 26 个非 static 定义 / 17 个 static 定义，全部一致）
+  （当前 29 个声明 / 27 个非 static 定义 / 28 个 static 定义，A/B/C 三类不一致均为 0）
 - 三者均已接入 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）
 
 论文编译：
