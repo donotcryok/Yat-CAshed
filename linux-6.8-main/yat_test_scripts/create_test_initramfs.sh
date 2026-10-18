@@ -1,135 +1,129 @@
 #!/bin/bash
-
 # 创建包含测试程序的 initramfs
-echo "=== 创建包含 Yat_Casched 测试程序的 initramfs ==="
+#
+# 设计说明：
+#   早期版本硬编码了 6 个测试程序源文件，但这些源码并不在本仓库中，
+#   导致脚本在干净检出上必然失败。现改为：
+#     1) 扫描 boot_test_scripts/ 下实际存在的 *.c，逐个编译；
+#     2) 只把编译成功的可执行文件打进 initramfs；
+#     3) 一个可执行文件都没有时报错退出（避免产出空壳环境）。
 
-# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
+set -euo pipefail
+
 KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$KERNEL_DIR"
 
-# 检查测试程序是否存在，如果不存在则编译
-echo "🔧 检查和编译测试程序..."
+BOOT_DIR="boot_test_scripts"
+OUT_DIR="test_with_programs_initramfs"
+OUT_IMAGE="test_with_programs.cpio.gz"
 
-# 编译测试程序
-if [ ! -f "boot_test_scripts/test_yat_casched_complete" ]; then
-    echo "编译 test_yat_casched_complete..."
-    gcc -O2 -static -o boot_test_scripts/test_yat_casched_complete boot_test_scripts/test_yat_casched_complete.c
+echo "=== 创建 Yat_Casched 测试 initramfs ==="
+echo "内核根目录: $KERNEL_DIR"
+
+# ---------------------------------------------------------------
+# 1. 检查基础工具
+# ---------------------------------------------------------------
+for tool in gcc cpio gzip; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "❌ 缺少依赖: $tool"
+        echo "请安装: sudo apt install gcc cpio gzip busybox-static qemu-system-x86"
+        exit 1
+    fi
+done
+
+if [ ! -f /bin/busybox ]; then
+    echo "❌ 未找到 /bin/busybox（需要静态版 busybox）"
+    echo "请安装: sudo apt install busybox-static"
+    exit 1
 fi
 
-if [ ! -f "boot_test_scripts/test_cache_aware_fixed" ]; then
-    echo "编译 test_cache_aware_fixed..."
-    gcc -O2 -static -o boot_test_scripts/test_cache_aware_fixed boot_test_scripts/test_cache_aware_fixed.c
+# ---------------------------------------------------------------
+# 2. 编译 boot_test_scripts/ 下实际存在的测试程序
+# ---------------------------------------------------------------
+echo ""
+echo "🔧 编译测试程序..."
+programs=()
+shopt -s nullglob
+for src in "$BOOT_DIR"/*.c; do
+    name="$(basename "$src" .c)"
+    bin="$BOOT_DIR/$name"
+    echo "  - 编译 $name ..."
+    if gcc -O2 -static -o "$bin" "$src"; then
+        programs+=("$name")
+    else
+        echo "    ⚠️  $name 编译失败，已跳过"
+        rm -f "$bin"
+    fi
+done
+shopt -u nullglob
+
+if [ ${#programs[@]} -eq 0 ]; then
+    echo "❌ $BOOT_DIR/ 下没有任何可编译的 *.c，无法生成测试环境"
+    echo "   提示：boot_test_scripts/yat_simple_test.c 是当前唯一维护的测试程序"
+    exit 1
 fi
 
-if [ ! -f "boot_test_scripts/verify_real_scheduling" ]; then
-    echo "编译 verify_real_scheduling..."
-    gcc -O2 -static -o boot_test_scripts/verify_real_scheduling boot_test_scripts/verify_real_scheduling.c
-fi
+echo "✅ 可打包程序: ${programs[*]}"
 
-# 编译新的核心功能测试
-if [ ! -f "boot_test_scripts/test_yat_core_functions" ]; then
-    echo "编译 test_yat_core_functions..."
-    gcc -O2 -static -o boot_test_scripts/test_yat_core_functions boot_test_scripts/test_yat_core_functions.c
-fi
+# ---------------------------------------------------------------
+# 3. 组装 initramfs 目录树
+# ---------------------------------------------------------------
+echo ""
+echo "📦 组装 initramfs 目录树..."
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"/{bin,sbin,etc,proc,sys,dev,tmp,usr/bin}
 
-if [ ! -f "boot_test_scripts/test_yat_hash_operations" ]; then
-    echo "编译 test_yat_hash_operations..."
-    gcc -O2 -static -o boot_test_scripts/test_yat_hash_operations boot_test_scripts/test_yat_hash_operations.c
-fi
+cp /bin/busybox "$OUT_DIR/bin/"
+chmod +x "$OUT_DIR/bin/busybox"
 
-if [ ! -f "boot_test_scripts/test_yat_history_table" ]; then
-    echo "编译 test_yat_history_table..."
-    gcc -O2 -static -o boot_test_scripts/test_yat_history_table boot_test_scripts/test_yat_history_table.c
-fi
+for name in "${programs[@]}"; do
+    cp "$BOOT_DIR/$name" "$OUT_DIR/bin/"
+    chmod +x "$OUT_DIR/bin/$name"
+done
 
-# 创建包含测试程序的 initramfs
-echo "📦 创建包含测试程序的 initramfs..."
+# ---------------------------------------------------------------
+# 4. 生成 init 脚本（菜单按实际打包内容动态生成）
+# ---------------------------------------------------------------
+{
+    echo '#!/bin/busybox sh'
+    echo ''
+    echo 'echo "=== Yat_Casched 测试环境启动成功 ==="'
+    echo 'echo "内核版本: $(busybox uname -r)"'
+    echo ''
+    echo '/bin/busybox mount -t proc proc /proc'
+    echo '/bin/busybox mount -t sysfs sysfs /sys'
+    echo '/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true'
+    echo ''
+    echo '/bin/busybox --install -s'
+    echo ''
+    echo 'echo ""'
+    echo 'echo "📋 可用的测试程序："'
+    for name in "${programs[@]}"; do
+        echo "echo \"  - $name\""
+    done
+    echo 'echo ""'
+    echo 'echo "基本命令：ps / top / free / dmesg / cat /proc/version"'
+    echo 'echo "退出：exit"'
+    echo ''
+    echo 'exec /bin/busybox sh'
+} > "$OUT_DIR/init"
+chmod +x "$OUT_DIR/init"
 
-rm -rf test_with_programs_initramfs
-mkdir -p test_with_programs_initramfs/{bin,sbin,etc,proc,sys,dev,tmp,usr/bin}
-
-# 复制静态 busybox
-cp /bin/busybox test_with_programs_initramfs/bin/
-chmod +x test_with_programs_initramfs/bin/busybox
-
-# 复制测试程序
-cp boot_test_scripts/test_yat_casched_complete test_with_programs_initramfs/bin/
-cp boot_test_scripts/test_cache_aware_fixed test_with_programs_initramfs/bin/
-cp boot_test_scripts/verify_real_scheduling test_with_programs_initramfs/bin/
-cp boot_test_scripts/test_yat_core_functions test_with_programs_initramfs/bin/
-cp boot_test_scripts/test_yat_hash_operations test_with_programs_initramfs/bin/
-cp boot_test_scripts/test_yat_history_table test_with_programs_initramfs/bin/
-chmod +x test_with_programs_initramfs/bin/test_*
-chmod +x test_with_programs_initramfs/bin/verify_*
-
-# 创建增强的 init 脚本
-cat > test_with_programs_initramfs/init << 'EOF'
-#!/bin/busybox sh
-
-echo "=== Yat_Casched 测试环境启动成功 ==="
-echo "内核版本: $(busybox uname -r)"
-
-# 挂载基本文件系统
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys  
-/bin/busybox mount -t devtmpfs devtmpfs /dev
-
-# 安装 busybox 命令
-/bin/busybox --install -s
+# ---------------------------------------------------------------
+# 5. 打包
+# ---------------------------------------------------------------
+echo ""
+echo "🗜️  打包 initramfs..."
+(
+    cd "$OUT_DIR"
+    find . | cpio -o -H newc 2>/dev/null | gzip > "../$OUT_IMAGE"
+)
 
 echo ""
-echo "🎯 Yat_Casched 调度器测试环境"
-echo "================================"
-echo "内核: $(uname -r)"
-echo "调度器: Yat_Casched (Cache-Aware Scheduler)"
+echo "✅ 完成: $OUT_IMAGE"
 echo ""
-
-echo "📋 可用的测试程序："
-echo "=== 核心功能测试 ==="
-echo "1. test_yat_core_functions     - 调度器核心功能测试"
-echo "2. test_yat_hash_operations    - 哈希表/历史表 CRUD 测试"
-echo "3. test_yat_history_table      - 专门历史表 CRUD 测试"
-echo ""
-echo "=== 性能和兼容性测试 ==="
-echo "4. test_yat_casched_complete   - 完整调度器测试"
-echo "5. test_cache_aware_fixed      - 缓存感知测试"  
-echo "6. verify_real_scheduling      - 实时调度验证"
-echo ""
-
-echo "📋 基本命令："
-echo "- ps        : 查看进程"
-echo "- top       : 系统监控"
-echo "- uptime    : 系统运行时间"
-echo "- free      : 内存使用情况"
-echo "- cat /proc/version : 详细内核信息"
-echo "- exit      : 退出"
-echo ""
-
-echo "🚀 快速测试："
-echo "# 核心功能测试"
-echo "test_yat_core_functions"
-echo "test_yat_hash_operations"
-echo "test_yat_history_table"
-echo ""
-echo "# 完整测试套件"
-echo "test_yat_casched_complete"
-echo "test_cache_aware_fixed"  
-echo "verify_real_scheduling"
-echo ""
-
-echo "=== 进入交互式 shell ==="
-exec /bin/busybox sh
-EOF
-
-chmod +x test_with_programs_initramfs/init
-
-# 创建 initramfs
-echo "🗜️ 打包 initramfs..."
-cd test_with_programs_initramfs
-find . | cpio -o -H newc | gzip > ../test_with_programs.cpio.gz
-cd ..
-
-echo "✅ 包含测试程序的 initramfs 创建完成: test_with_programs.cpio.gz"
-echo ""
-echo "🚀 使用方法："
-echo "qemu-system-x86_64 -nographic -m 1024 -kernel vmlinux -initrd test_with_programs.cpio.gz -append \"console=ttyS0,115200\" -accel tcg"
+echo "启动方式："
+echo "  cd $KERNEL_DIR/yat_test_scripts && ./start_test_environment.sh"
+echo "  或手工："
+echo "  qemu-system-x86_64 -nographic -m 1024 -kernel vmlinux \\"
+echo "      -initrd $OUT_IMAGE -append \"console=ttyS0,115200 noapic nolapic acpi=off\" -accel tcg"

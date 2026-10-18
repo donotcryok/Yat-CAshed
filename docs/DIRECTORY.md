@@ -2,38 +2,47 @@
 
 ```text
 Yat-CAShed/
-├── README.md                    # 顶层项目说明
-├── Makefile                     # ★ 顶层编排入口（check/simulator/report/...）
-├── CONTRIBUTING.md              # ★ 贡献指南
-├── LICENSE                      # ★ 许可说明（分模块）
-├── .editorconfig                # ★ 统一编辑器/代码风格
-├── .gitignore                   # 忽略规则
-├── .github/workflows/ci.yml     # ★ CI：冲突守卫 + 模拟器编译校验
+├── README.md                    # 顶层项目说明与快速开始
+├── Makefile                     # 顶层编排入口（check/docs-check/simulator/report/...）
+├── CONTRIBUTING.md              # 贡献指南
+├── CHANGELOG.md                 # 变更日志（Keep a Changelog 风格）
+├── LICENSE                      # 分模块许可说明
+├── .editorconfig                # 统一编辑器/代码风格
+├── .gitattributes               # 行尾归一化（* text=auto eol=lf）
+├── .gitignore                   # 忽略规则（含内核产物、模拟器 classes/result）
+├── .github/workflows/ci.yml     # CI：仓库检查 + 文档链接 + 符号一致性 + 模拟器回放
 │
-├── docs/                        # ★ 新增：统一文档中心
+├── docs/                        # 统一文档中心
 │   ├── README.md                #   文档索引
 │   ├── ARCHITECTURE.md          #   项目架构与模块组成
 │   ├── CONFLICT_ANALYSIS.md     #   yat_casched.c 冲突分析与解决记录（已解决：路线 A）
-│   ├── ROADMAP.md               #   改进与开发方向
+│   ├── ROADMAP.md               #   改进与开发方向（优先级 + 执行顺序）
 │   ├── DEVELOPMENT.md           #   环境/构建/测试指南
+│   ├── EXPERIMENT_REPORT.md     #   模拟器 WFD vs CacheAware_v2 实验报告
+│   ├── DEPENDENCIES.md          #   simulator/lib 依赖审计
+│   ├── PROJECT_AUDIT.md         #   工程化审计快照（问题清单与处理状态）
+│   ├── DIRECTIONS.md            #   改进与开发方向建议（面向后续开发）
 │   ├── DIRECTORY.md             #   本文件
-│   └── archive/                 #   归档文档说明
+│   └── archive/                 #   归档区（历史文档存放说明）
 │
 ├── scripts/
-│   └── check_repo.sh            # ★ 仓库健康检查脚本
+│   ├── check_repo.sh            # 仓库健康检查（冲突标记/空文件/关键文件）
+│   ├── check_symbols.sh         # 内核头文件声明 vs 实现定义一致性
+│   ├── check_docs.py            # Markdown 相对链接有效性检查
+│   └── normalize_eol.py         # 历史文件行尾归一化工具
 │
 ├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat_Casched 调度类
-│   ├── kernel/sched/yat_casched.c        # 调度器核心（AJLR，冲突已解决）
-│   ├── include/linux/sched/yat_casched.h # 数据结构与接口声明
-│   ├── Yat_Casched开发文档.md             # 初赛版实现文档
-│   ├── yat_casched优化记录.md             # 迭代优化记录（变更日志）
-│   ├── boot_test_scripts/                # 用户态 C 测试程序
+│   ├── kernel/sched/yat_casched.c         # 调度器核心（AJLR，路线 A）
+│   ├── include/linux/sched/yat_casched.h  # 数据结构与接口声明
+│   ├── Yat_Casched开发文档.md              # 初赛版实现文档
+│   ├── yat_casched优化记录.md              # 迭代优化记录
+│   ├── boot_test_scripts/                 # 用户态 C 测试程序（极简 QEMU 环境）
 │   │   ├── README.md
 │   │   ├── SIMPLE_TEST_README.md
-│   │   ├── yat_simple_test.c             # 有效测试源码
-│   │   ├── yat_scheduler_test.c          # ⚠️ 空文件（待补齐或删除）
-│   │   └── test_simple_history_validation.c  # ⚠️ 空文件
-│   ├── yat_test_scripts/                 # QEMU 测试环境脚本
+│   │   ├── build_yat_simple_test.sh
+│   │   ├── start_yat_simple_test.sh
+│   │   └── yat_simple_test.c
+│   ├── yat_test_scripts/                  # QEMU 测试环境脚本
 │   │   ├── README.md
 │   │   ├── create_test_initramfs.sh
 │   │   ├── start_test_environment.sh
@@ -41,37 +50,48 @@ Yat-CAShed/
 │   │   ├── start_qemu_yat_test.sh
 │   │   ├── quick_test_guide.sh
 │   │   └── manual_test_guide.sh
-│   ├── test_visualization/               # 性能测试与结果可视化
+│   ├── test_visualization/                # 性能测试与结果可视化（独立小工具）
 │   │   ├── performance_test.c
 │   │   ├── debug_scheduler.c
 │   │   ├── visualize_results.py
+│   │   ├── performance_results.csv
 │   │   ├── README.md
-│   │   └── img/                          # 生成的图表
-│   └── yat_simple_test_env/              # 极简 QEMU 测试环境
+│   │   └── img/                           # 已生成的图表与 summary
+│   └── yat_simple_test_env/               # 极简 QEMU initramfs 环境
 │
-├── simulator/                   # Java 缓存感知调度算法模拟器
-│   ├── AlgorithmComparisonExperiment.java # 实验主入口
+├── simulator/                   # Java 缓存感知调度算法模拟器（Java 17+）
+│   ├── AlgorithmComparisonExperiment.java # 实验主入口（8 核 / 100 用例 / 60 任务）
 │   ├── LibraryVerification.java           # 依赖库自检
-│   ├── Makefile                          # ⚠️ Windows cmd 语法
-│   ├── build.bat                         # Windows 构建
-│   ├── Simulator.md                      # 模拟器详细文档
-│   ├── allocation/  WFD, CacheAware_v1/v2, AllocationMethods
-│   ├── analyzer/    PerformanceAnalyzer
-│   ├── entity/      Node, RecencyProfileReal
-│   ├── generator/   CacheHierarchy, EnhancedTaskGenerator, UUnifastDiscard
-│   ├── parameters/  SystemParameters
-│   ├── visualizer/  ResultVisualizer.java, visualize.py, requirements.txt
-│   └── lib/         第三方 JAR（30+）
+│   ├── Makefile                           # 跨平台 GNU Make（Linux/macOS/WSL/Git-Bash）
+│   ├── build.bat                          # Windows 批处理备用入口
+│   ├── Simulator.md                       # 模拟器详细设计文档
+│   ├── allocation/   AllocationMethods, WFD, CacheAware_v1, CacheAware_v2
+│   ├── analyzer/     PerformanceAnalyzer
+│   ├── entity/       Node, RecencyProfileReal
+│   ├── generator/    CacheHierarchy, EnhancedTaskGenerator, UUnifastDiscard
+│   ├── parameters/   SystemParameters
+│   ├── visualizer/   ResultVisualizer.java, visualize.py, requirements.txt
+│   ├── tests/        YatSimulatorTest.java（58 条断言）
+│   └── lib/          commons-math3-3.6.1.jar（唯一运行时依赖）
 │
 └── report/                      # 论文、报告与参考资料
-    ├── paper/                   # 毕业论文 LaTeX 源码
-    │   ├── Yat-CAShed.tex       # 主文件
-    │   ├── chapter1..7*.tex     # 各章节
-    │   ├── Yat-CAShed_new.tex   # ⚠️ 空文件
+    ├── paper/                   # 毕业设计 LaTeX 源码（章节文件与主文件平铺）
+    │   ├── Yat-CAShed.tex       # 主文件（\input 扁平文件名）
+    │   ├── cover.tex / abstract.tex / navigation.tex / references.tex
+    │   ├── chapter1-intro.tex … chapter7-difficulties.tex
     │   ├── Yat_Casched_完整实现文档.md  # 决赛版实现文档
-    │   └── yat_CAsched.pdf      # 编译成品
+    │   ├── Yat-CAShed.pdf       # make report 产物（不纳入版本控制）
+    │   ├── yat_CAsched.pdf      # 历史成品（留档）
+    │   └── img/SYSULogo.png
     ├── prompt_md/               # 分析笔记（ajlr_paper_analysis / plan / test1）
     └── *.pdf / *.pptx / *.docx / *.txt   # 参考论文与早期材料
 ```
 
-> 说明：标 `★` 者为本次工程化整理新增；标 `⚠️` 者为已知待处理项。
+## 说明
+
+- `report/paper/` 的章节文件**与主文件同目录平铺**，主文件使用 `\input{cover.tex}` 这类扁平路径；
+  历史上的 `chapters/` 子目录并不存在，相关引用已修复。
+- `simulator/result/` 为运行产物目录（CSV + PNG），已被 `.gitignore` 忽略。
+- `.gitignore` 中 `*.jar` 规则通过 `!simulator/lib/*.jar` 保留唯一依赖包。
+- 内核树占仓库体积绝大部分；如需瘦身，参见
+  [`ROADMAP.md`](ROADMAP.md) 中「补丁化 / submodule」方向。

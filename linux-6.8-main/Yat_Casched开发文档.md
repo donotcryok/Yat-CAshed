@@ -787,7 +787,7 @@ gcc -O2 -o verify_real_scheduling verify_real_scheduling.c
 
 本项目设计了完整的性能测试系统，详细的测试配置、方法和结果分析请参考：
 
-**📁 [test_visualization/README.md](../test_visualization/README.md)**
+**📁 [test_visualization/README.md](test_visualization/README.md)**
 
 ### 测试系统概述
 
@@ -824,7 +824,7 @@ Performance improvement: 2.2%
 - **执行时间对比图** - 反映整体性能提升
 - **CPU亲和性分数对比图** - 展示缓存局部性改善
 
-详细的图表分析请参考：[test_visualization/img/performance_summary.md](../test_visualization/img/performance_summary.md)
+详细的图表分析请参考：[test_visualization/img/performance_summary.md](test_visualization/img/performance_summary.md)
 
 ### 快速测试验证
 

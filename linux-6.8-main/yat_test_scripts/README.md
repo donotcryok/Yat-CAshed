@@ -1,130 +1,98 @@
-# Yat_Casched 调度器测试环境教程
+# Yat_Casched QEMU 测试环境
 
-## 🚀 快速开始
+本目录提供在 QEMU 中启动自带 Yat_Casched 调度类内核的脚本。
+所有脚本均使用**相对路径**定位内核根目录，可在任意检出位置运行。
 
-### ⭐ 推荐：直接启动测试环境（包含所有测试程序）
+## 快速开始
+
 ```bash
-cd ~/LAB_ungraduate/Yat-CAShed/linux-6.8-main/yat_test_scripts
+cd linux-6.8-main/yat_test_scripts
+
+# 推荐：一步启动（缺 initramfs 会自动构建）
 ./start_test_environment.sh
 ```
 
-### 手动启动方式
+手工分步：
+
 ```bash
-# 确保测试程序 initramfs 存在
+# 1) 构建带测试程序的 initramfs（会编译 boot_test_scripts/*.c）
 ./create_test_initramfs.sh
 
-# 手动启动（推荐使用上面的自动脚本）
-qemu-system-x86_64 -nographic -m 1024 -kernel ../vmlinux -initrd ../test_with_programs.cpio.gz -append "console=ttyS0,115200" -accel tcg
+# 2) 启动
+qemu-system-x86_64 -nographic -m 1024 -kernel ../vmlinux \
+  -initrd ../test_with_programs.cpio.gz \
+  -append "console=ttyS0,115200 noapic nolapic acpi=off" -accel tcg
 ```
 
-### 基础环境（仅 shell，无测试程序）
+仅需基础 shell（不含测试程序）：
+
 ```bash
-./start_qemu_simple.sh    # 仅基础环境，适合手动测试
+./start_qemu_simple.sh
 ```
 
-## 🧪 核心功能测试
+## 脚本清单
 
-### 必做测试（验证改动）
+| 脚本 | 作用 |
+|------|------|
+| `create_test_initramfs.sh` | 编译 `boot_test_scripts/*.c`，打包 `test_with_programs.cpio.gz` |
+| `start_test_environment.sh` | 检查 `vmlinux` 与 initramfs，缺失时自动构建，然后启动 QEMU |
+| `start_qemu_simple.sh` | 最小环境启动（无测试程序） |
+| `start_qemu_yat_test.sh` | 面向 YAT 专项测试的启动入口 |
+| `quick_test_guide.sh` | 交互式快速测试引导 |
+| `manual_test_guide.sh` | 手工测试步骤说明 |
 
-**1. 核心功能测试**
-```bash
-test_yat_core_functions
-```
-- 验证调度器初始化
-- 测试进程调度基本功能
-- 检查缓存感知调度
+前置条件：
 
-**2. 哈希表/历史表测试**
-```bash
-test_yat_hash_operations  
-```
-- 测试哈希表 CRUD 操作
-- 验证历史表记录功能
-- 性能压力测试
+1. 已在 `linux-6.8-main/` 编译出 `vmlinux`（`make -j$(nproc)`）；
+2. 已安装 `busybox-static`、`gcc`、`cpio`、`gzip`、`qemu-system-x86`；
+3. 内核启用 `CONFIG_SCHED_CLASS_YAT_CASCHED`。
 
-**3. 专门历史表测试**
-```bash
-test_yat_history_table
-```
-- 专门测试历史表增删改查
-- 验证历史记录插入、查询、更新、删除
-- 批量操作和性能测试
-
-### 完整测试套件
-
-**3. 性能测试**
-```bash
-test_yat_casched_complete   # 完整调度器测试
-test_cache_aware_fixed      # 缓存感知测试
-verify_real_scheduling      # 实时调度验证
-```
-
-## 📋 测试验证要点
-
-### ✅ 成功标准
-- 调度器初始化无错误：`dmesg | grep yat_casched`
-- 哈希表操作正常：进程创建/销毁无异常
-- 历史表记录工作：短期进程正确记录
-- 系统稳定运行：无 kernel panic
-- 缓存感知生效：内存访问优化
-
-### ⚠️ 关键检查点
-```bash
-# 查看调度器启动日志
-dmesg | grep "init yat_casched rq"
-
-# 检查数据结构初始化
-dmesg | grep "Global structures initialized"
-
-# 监控系统状态
-ps aux
-top
-free
-```
-
-## �️ 环境准备
-
-### 依赖安装
 ```bash
 sudo apt update
-sudo apt install busybox-static gcc cpio gzip qemu-system-x86
+sudo apt install -y busybox-static gcc cpio gzip qemu-system-x86
 ```
 
-### 编译测试程序
+## 测试程序说明
+
+`create_test_initramfs.sh` 会扫描 [`boot_test_scripts/`](../boot_test_scripts) 下**实际存在**的
+`*.c` 并逐个编译；当前仓库中维护的测试程序为：
+
+| 程序 | 说明 |
+|------|------|
+| `yat_simple_test` | 5 进程并发，逐个切换到 YAT 策略并打印所在 CPU |
+
+历史文档提到的 `test_yat_core_functions`、`test_yat_hash_operations`、
+`test_yat_history_table`、`test_yat_casched_complete`、`test_cache_aware_fixed`、
+`verify_real_scheduling` 等程序**源码已不在仓库中**，脚本会自动跳过缺失项而不再报错。
+
+## 验证要点
+
+进入 guest 后：
+
 ```bash
-cd ~/LAB_ungraduate/Yat-CAShed/linux-6.8-main
-gcc -O2 -static -o boot_test_scripts/test_yat_core_functions boot_test_scripts/test_yat_core_functions.c
-gcc -O2 -static -o boot_test_scripts/test_yat_hash_operations boot_test_scripts/test_yat_hash_operations.c
+uname -r                          # 内核版本
+cat /proc/version                 # 详细构建信息
+dmesg | grep -i yat_casched       # 调度类注册/初始化日志
+ps aux                            # 进程状态
+free                              # 内存
 ```
 
-## 🎯 使用方式
+成功标准：
 
-### 基础测试（终端环境）
-进入虚拟机后运行基本命令：
-```bash
-cat /proc/version    # 查看内核版本
-ps aux              # 查看进程
-dmesg | grep yat    # 查看调度器日志
-```
+- 调度类初始化无错误；
+- 测试进程能成功 `sched_setattr` 到 YAT 策略；
+- 进程在多个 CPU 间可见迁移，且系统无 panic。
 
-### 专业测试（完整程序）
-运行专门的测试程序验证改动：
-```bash
-test_yat_core_functions     # 🔥 核心功能
-test_yat_hash_operations    # 🔥 数据结构
-```
+## 退出
 
-## ⚠️ 重要提示
+在 guest shell 中输入 `exit`，再按 `Ctrl+A` 然后 `X`。
 
-- **退出**: `exit` → `Ctrl+A` → `X`
-- **核心日志**: `dmesg | grep "init yat_casched rq"`
-- **必测项目**: `test_yat_core_functions` + `test_yat_hash_operations`
+## 故障排查
 
-## � 故障排查
-
-| 问题 | 解决方案 |
-|------|---------|
-| busybox 找不到 | `sudo apt install busybox-static` |
-| KVM 不可用 | 自动降级 TCG，正常使用 |
-| 权限错误 | `chmod +x *.sh` |
-| 编译失败 | 检查 gcc 和源码文件 |
+| 问题 | 处理 |
+|------|------|
+| `找不到内核文件 vmlinux` | 先在 `linux-6.8-main/` 编译内核 |
+| `未找到 /bin/busybox` | `sudo apt install busybox-static` |
+| KVM 不可用 | 脚本已使用 `-accel tcg`，纯软件模拟，较慢但可用 |
+| 权限错误 | `chmod +x ./*.sh` |
+| 编译失败 | 检查 `gcc` 与 `boot_test_scripts/*.c`；失败项会被跳过并打印原因 |

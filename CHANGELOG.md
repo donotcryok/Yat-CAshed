@@ -3,10 +3,189 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — A1 补丁化 + C1 公平基线
+
+### 新增（Added）
+
+- **内核补丁包（A1）**：[`patches/`](patches) 目录，把 Yat 对上游 Linux 6.8 的全部改动
+  抽成 **6 个可独立应用的补丁**（合计 188 KB），使仓库不再需要携带 1.6 GB /
+  ~83k 文件的 `linux-6.8-main/`。内容：
+  - `0001-sched-yat-casched-core.patch` — 调度类主体
+    （`yat_casched.c` / `yat_casched.h` / `include/linux/sched.h`）
+  - `0002-sched-yat-casched-integration.patch` — 集成点
+    （`core.c` / `sched.h` / `init_task.c` / `uapi/sched.h` / `init/Kconfig` / `sched/Makefile`）
+  - `0003-x86-realmode-tolerate-missing-trampoline.patch` — 编译兼容修复
+  - `0004-kernel-gitignore.patch` / `0005-test-env.patch` / `0006-docs.patch` — 测试环境与文档
+  - [`patches/series`](patches/series)（`git quiltimport` 可直接消费）
+  - [`patches/MANIFEST.sha256`](patches/MANIFEST.sha256)（逐补丁校验和）
+  - [`patches/README.md`](patches/README.md)（应用/反解/校验说明）
+- **补丁生成与自检工具**：
+  - [`scripts/gen_kernel_patches.sh`](scripts/gen_kernel_patches.sh) — 从工作区与上游
+    逐文件 diff 生成补丁，并**断言往返一致**（apply → 与仓库逐字节相同；
+    reverse → 与上游逐字节相同）。
+  - [`scripts/kernel-patch.sh`](scripts/kernel-patch.sh) — `apply` / `reverse` / `check` /
+    `--selftest`；`--selftest` 在临时上游树上完整跑一遍正反两个方向。
+  - `make patch-check` 接入门禁。
+- **公平缓存执行模型（C1）**：[`simulator/entity/SharedCacheModel.java`](simulator/entity/SharedCacheModel.java)
+  （270 行）—— **WFD 与 CacheAware_v2 共用同一个**「缓存层级 + 有效执行时间」决策器：
+  - `resolveCacheLevel(task, processor)`：命中 L1（独占核 + 窗口内同 DAG）→ ×0.8；
+    L2（同 L2 组，`Level2CoreNum=2`）→ ×0.9；L3（全芯片）→ ×0.95；内存 → ×1.2；
+    `hasFaults` 再 ×1.5；下限 `base/2`，至少 1 ns。
+  - `execute()` **不改写 `expectedET`**，从结构上保证两算法面对同一任务集。
+  - `recordMeasurements()` 把实际层级与命中率写回 `Node.actualCacheHitRatio` /
+    `measuredCacheLevel`，供分析器**实测**统计。
+- **实测命中率口径**：[`PerformanceAnalyzer.calculateMeasuredCacheHitRatio()`](simulator/analyzer/PerformanceAnalyzer.java#L298)
+  优先使用模型写入的实测值，**不再按算法名分派估算公式**。
+- **多种子与旧口径开关**（`AlgorithmComparisonExperiment`）：
+  - `--seeds=42,43,44,45,46`（或 `--seeds=5`）—— 多种子聚合，输出均值 / 样本 SD /
+    95% CI / 逐种子取值。
+  - `--legacy-metrics` —— 逐位复现改造前的（不公平）结果，**仅供审计**。
+- **公平性单元测试**：[`simulator/tests/YatSimulatorTest.java`](simulator/tests/YatSimulatorTest.java)
+  新增 `[6] testFairBaseline()`，14 项断言，覆盖：
+  1. 同一任务在两个算法路径下 `expectedET` **不被改写**；
+  2. `SharedCacheModel` 对同一 `(task, processor)` 给出**确定性**层级与 ET；
+  3. 层级优先级（L1 > L2 > L3 > 内存）与窗口边界（第 5/6 次访问）；
+  4. `applyLevelFactor()` 的截断与下限（`base=1`、`base=0`）；
+  5. 命中率只取实测值、与算法名无关。
+  断言总数 **58 → 72**。
+- **公平基线报告**：[`docs/EXPERIMENT_REPORT.md`](docs/EXPERIMENT_REPORT.md) 新增/重写：
+  - §1 增加第四个问题 Q4（收益在公平模型下是否成立）；
+  - §3.3 两算法共用同一 `SharedCacheModel` 的执行模型伪代码；
+  - §3.4 命中率改为「算法无关」定义；
+  - §3.5 配对统计与多种子 CI 口径；
+  - **§3.6「公平基线改造（C1）」**——4 处根因、6 处修复、改造前后对照表；
+  - §4.1 公平总体结果 + 5 种子稳健性表；§4.2 按利用率分解；§4.3 极端用例
+    （60/100 例 |Δ|>5%，21/100 例 |Δ|>10%）；
+  - **§4.5「为什么收益消失？——机制层面的解释」**——探针实测的层级分布。
+- **诊断探针**（临时脚本，不入库）：量化了「CacheAware 确实提升局部性
+  （同 DAG 同核 1 → 6 次、L1 命中 0 → 2）但 40/60 任务仍落 L3（×0.95），
+  可优化上限仅 5%」这一机制。
+
+### 变更（Changed）
+
+- [`docs/EXPERIMENT_REPORT.md`](docs/EXPERIMENT_REPORT.md)：全文改为**公平基线口径**，
+  旧口径数字一律标注为「仅 `--legacy-metrics` 可复现，不可作为算法证据」。
+- [`docs/ROADMAP.md`](docs/ROADMAP.md)：D 类研究方向**按 C1 的结论重新排序**。
+  - 原 D1–D7 是平铺列表，隐含「先调算法」的假设；C1 测得模型收益天花板仅约 5%
+    （40/60 任务落 L3、系数 0.95），意味着**在度量修好前无法证伪任何参数调整**。
+  - 重排为 D1'–D9'：新增 **D1' 真实硬件代价模型**、**D2' trace 驱动负载保真**、
+    **D8' 仿真↔内核一致性** 三项前置工作，原 D1–D7 顺延为 D3'–D9' 并各自标注前置条件。
+  - §0 优先级总览改为「状态 + 剩余工作」两列，§5 增加一张按投入排序的下一步表。
+- [`simulator/Simulator.md`](simulator/Simulator.md)：多处**订正声明/实现不一致**
+  （A2 延续）：
+  - 「📈 性能优化成果」整节重写。删除无来源的
+    `1,245,678 ns → 987,654 ns / ↓20.7% / p<0.001`、`命中率 64.2% → 82.5%`、
+    `能耗 2,145.6 J → 1,678.3 J` 等数字，改为公平口径实测
+    （Makespan 176,436.8 vs 177,686.2 ns；命中率 18.90% vs 18.08%；胜场 56/44；
+    CI ±1.51% 跨 0）。
+  - 删除**仓库中不存在的**三个"创新机制"伪代码
+    （`adjustWeights()` / `predictCacheUtilization()` / `adaptiveWeightLearning()`，
+    全仓 grep 0 命中），改为按真实实现
+    （[`calculateCacheAwareScore()`](simulator/allocation/CacheAware_v2.java#L104) 四项评分 +
+    [`updateProcessorState()`](simulator/allocation/CacheAware_v2.java#L247)）描述。
+  - 修正实验配置常量：`TASKS_PER_CASE` 由 50 → **60**，
+    利用率级别由 7 级 `{0.4…2.0}` → **5 级 `{0.6,0.8,1.0,1.2,1.5}`**，
+    与 [`AlgorithmComparisonExperiment`](simulator/AlgorithmComparisonExperiment.java#L51) 对齐。
+  - 修正「预期结果范围」：由「Makespan +15%、命中率 +20%、胜率 70%」改为
+    公平口径的可验证性质（共用模型 / 不改写 ET / CI 跨 0）。
+  - 「技术特色」表与「算法对比分析」表中的 `+15~25%` / `改善 30%` 一并订正。
+- [`docs/ROADMAP.md`](docs/ROADMAP.md)：A3（补丁化）标记为已完成。
+
+### 修复（Fixed）
+
+- **CacheAware 改写 `expectedET`**（公平性根因 1）：`CacheAware_v2.calculateExecutionTime()`
+  过去会把增强后的 ET 写回任务，导致 WFD 与 CacheAware 比较的**不是同一任务集**。
+  C1 起 ET 由 `SharedCacheModel.execute()` 统一决定，`expectedET` 保持不可变。
+- **命中率按算法名分派**（根因 2）：`PerformanceAnalyzer` 曾用两套估算公式，
+  且 WFD 侧被 clamp 在 `[0.30, 0.70]`，人为压低基线。改为实测口径。
+- **WFD 负载数组硬编码 `int[8]`**（根因 3）：核数 ≠ 8 时统计失真，
+  改为按实际核数分配。
+- **`createCacheIntensiveTask()` 把 `dagID` 硬编码为 0**（根因 4）：使「同 DAG」判断
+  对两个算法都恒为真，亲和性信号失效。改为按 `taskId / DAG_TASKS_PER_GROUP` 计算。
+- **`--no-viz` 不导出 CSV**：`exportToCSV` 位于 `generateVisualization()` 内，
+  关闭可视化后 `result/algorithm_comparison_results.csv` 会保持旧内容。
+  已在文档中明确该行为，避免拿陈旧 CSV 做分析。
+- **报告把「百分点」印成「%」**：`generateReport()` 中原为
+  `平均缓存命中率改进: %.2f%%`，而该值实际是 `cacheHit 之差`（单位是百分点）。
+  改为 `%.2f 个百分点`，避免把 +0.82 pp 误读成 +0.82%。
+- **报告未区分「比值口径」与「配对口径」**：`性能改进 - Makespan减少: x ns (y%)`
+  中的 `y` 是 `(WFD均值 − CA均值) / WFD均值`，会被大用例主导；而
+  `平均Makespan改进` 是逐用例相对改进的均值。现分别标注为
+  「比值口径（便于直觉）」与「配对均值（用于显著性检验）」。
+- **小样本下仍给出「优势明显/不够稳定」的措辞**：`result 评估` 段在
+  `n < 20` 时（如 `make simulator-verify` 的 5 例冒烟）附加一行提示，
+  明确该结论仅作冒烟参考，不作为算法结论。
+- **文档中的代码行号链接写法失效**：`docs-check` 只校验「路径」部分，
+  写成 `Foo.java:298` 会被当作文件名而判为失效链接。已统一改为
+  `Foo.java#L298` 的锚点形式（21 处）。
+- **多种子 CI 用正态近似替代 t 分布**（偏乐观）：`printAggregate()` 原用
+  `1.96 · sd / √n`，n=5 时真值应为 `t(0.975,4) = 2.776`，区间被低估约 29%，
+  足以把「不显著」误报为「显著」。现按自由度查表（df ≤ 30），
+  并在输出中显式打印所用 `t` 值。更正后 5 种子 Makespan 改进的
+  CI 由 ±1.233% 放大到 **±1.746%**（均值 −0.954% 仍跨 0，结论不变，
+  但「边际显著」的说法不再成立）。
+
+### 验证（Verified）
+
+- `bash scripts/kernel-patch.sh --selftest` → **往返一致**：
+  apply 后与仓库逐字节相同，reverse 后与上游逐字节相同。
+- `make patch-check` → 6 个补丁校验和全部匹配。
+- `make -C simulator test` → **72/72 断言通过**（新增 14 项公平性断言）。
+- **公平基线全量实验**（seed=42，100 用例 × 60 任务）：
+
+  | 指标 | 旧口径 | 公平口径 |
+  | --- | --- | --- |
+  | Makespan 改进 | 11.66% | **0.39%**（配对均值） |
+  | CacheAware Makespan | 155,059 ns | 176,436.8 ns |
+  | WFD Makespan | 176,044 ns | 177,686.2 ns |
+  | 命中率提升 | +30.21 pp | **+0.82 pp** |
+  | CacheAware / WFD 命中率 | 73.8% / 43.6% | 18.90% / 18.08% |
+  | CacheAware 胜率 | 96.0% | **56.0%** |
+  | 平均响应时间 | — | **+1.47%（CacheAware 更差）** |
+
+  配对差分：均值 +0.39%、中位数 +1.34%、SD 7.70%、**95% CI ±1.51%（跨 0）**；
+  |Δ|>5% 的用例 60/100，|Δ|>10% 的用例 21/100。
+- **5 种子稳健性**（42–46，n=5，CI 用 t(0.975,4)=2.776）：Makespan 改进 **−0.954% ± 1.745%**、
+  命中率 **+0.377 pp ± 0.338 pp**、胜率 **48.6% ± 7.164%** —— 点估计为负且 CI 跨 0。
+- `--legacy-metrics --seed=42` 可**逐位复现**改造前的 11.66% / +30.21 pp / 96.0%，
+  证明改造是"换口径"而非"改坏了算法"。
+- `make verify-all` → 全部门禁通过。
+
+### 已知遗留（Known Issues）
+
+- **公平口径下没有可宣称的算法优势**：这是本次改造**如实暴露**的结果，
+  而非回归。历史 11.66% / +30 pp / 96% 主要来自模型校准偏移
+  （CacheAware 独占 ET 改写权 + 命中率双套公式）。
+- **可优化空间的结构性上限**：缓存层级因子是人为设定（L1 0.8 / L2 0.9 / L3 0.95 /
+  内存 1.2），且 60 任务中约 40 个必然落在 L3，理论上限仅 5%。
+  要得到有意义的效果，需要换用**真实硬件代价**或**真实 trace**（见 ROADMAP 方向 D）。
+- **多种子 n=5 的样本量仍偏小**：CI 已改用 t(0.975,4)=2.776（早期版本误用 1.96，
+  已修复）。即便按更宽的区间，Makespan 与胜率的结论不变，但命中率提升
+  的区间 [+0.04, +0.72] pp 只是**勉强不含 0**，不应作为独立证据使用。
+- **若要获得可宣称的结论，n=5 远远不够**：按当前 SD（SD≈1.4%）估算，
+  检出 1% 的 Makespan 差异需要 10 个以上种子；检出 0.5% 需要 40 个以上。
+  在投入之前应先确认「差异本身存在」，这需要方向 D 的真实硬件代价模型。
+- **`SharedCacheModel` 是模型而非硬件**：所有 "ET 节省" 都是模型参数的直接产物，
+  不能当作真实系统的性能证据。
+
+---
+
 ## [Unreleased] — 工程化整理
 
 ### 新增（Added）
 
+- **文档链接门禁**：[`scripts/check_docs.py`](scripts/check_docs.py) —— 纯标准库实现的
+  Markdown 相对链接检查器（跳过代码块/行内代码/外链/锚点/`mailto:`/`data:`，
+  处理 `#anchor`、`?query`、URL 编码与 `<...>` 包裹路径）。
+  已接入 `make docs-check` 与 CI，当前覆盖 **25 个 Markdown 文件 / 182 条链接 /
+  0 条失效**。文档腐化从「靠人肉 review」变为「提交即拦截」。
+- **项目审计快照**：[`docs/PROJECT_AUDIT.md`](docs/PROJECT_AUDIT.md) —— 以可复现的
+  命令与数字记录仓库现状（2.1 GB 工作区 / 529 MB `.git` / 83568 个受管文件）、
+  构建链问题 `B-01..B-06`、文档一致性 `D-01..D-10`、代码与设计 `K-01..K-10`、
+  模拟器方法论 `S-01..S-07`、仓库治理 `R-01..R-05`，并给出门禁通过状态与优先级。
+- **方向决策文档**：[`docs/DIRECTIONS.md`](docs/DIRECTIONS.md) —— 在 `ROADMAP.md`
+  的任务级拆解之上补充**方向级**判断：A 仓库瘦身（推荐补丁化）、B 内核正确性与并发、
+  C 实验可信度、D 算法深化，附「不建议做的事」与 M1–M5 里程碑。
 - **内核调度器冲突解决（路线 A，决赛 AJLR 版）**：
   [`linux-6.8-main/kernel/sched/yat_casched.c`](linux-6.8-main/kernel/sched/yat_casched.c)
   由 **1791 行（含 10 处 Git 冲突标记）** 重建为 **约 1396 行、0 标记** 的单一 AJLR 实现：
@@ -80,6 +259,24 @@
 
 ### 修复（Fixed）
 
+- **论文构建链修复**（[`Makefile`](Makefile) 的 `report` 目标 + 论文源）：
+  - [`report/paper/Yat-CAShed.tex`](report/paper/Yat-CAShed.tex)：`\input{chapters/...}`
+    指向**不存在的子目录**（章节文件实际平铺在 `report/paper/` 下），改为平铺文件名。
+  - [`report/paper/chapter4-theory.tex`](report/paper/chapter4-theory.tex)：替换 `lmroman10-bold`
+    无字形的字符 —— 8 处 `✓`（U+2713）改为 `\checkmark`，1 处 `🎯`（U+1F3AF）删除。
+  - `make report` 改为 `latexmk -xelatex -halt-on-error`（无 `latexmk` 时回退两遍 `xelatex`），
+    失败即非零退出，不再「构建成功但缺字/缺页」。
+  - 清除损坏的 `Yat-CAShed.aux`（含 NUL 字节，导致 `! Text line contains an invalid
+    character. l.1 ^^@` 而中断）后重建：**25 页 / 0 missing character**。
+- **失效文档链接 4 处**（由新门禁首次运行发现）：两处指向不存在的图片，
+  两处 `../` 层级错误；已改为实际存在的 `test_visualization/img/*.png` 与正确相对路径。
+- **`create_test_initramfs.sh` 必然失败**：脚本硬编码引用 6 个仓库中并不存在的 `.c`
+  测试程序。改为扫描 `boot_test_scripts/*.c` 实际存在的源文件、逐个静态编译、
+  按成功列表动态生成 `init`（无源文件时给出明确错误而非静默产出空 initramfs）。
+- **文档与实现脱节**：`CONTRIBUTING.md` 引用了未定义的 `make simulator-linux`；
+  `docs/ARCHITECTURE.md` / `DIRECTORY.md` 仍称「30+ JAR」「Windows cmd Makefile」
+  「`.tex` 为空文件」；三份测试目录 README 描述了已不存在的脚本。
+  均已按当前仓库实际内容改写。
 - `linux-6.8-main/kernel/sched/yat_casched.c`（路线 A 重建时一并修复的连带缺陷）：
   - **`yat_pool_lock` 丢失**：该锁原定义在被丢弃的 HEAD 冲突块内，而 dev 侧 `enqueue`/`dequeue`
     仍在引用 → 补回 `static DEFINE_SPINLOCK(yat_pool_lock);`，并补兼容用的
@@ -187,6 +384,8 @@
   3 张 PNG 均重新生成；`ResultVisualizer` 修正后输出
   「Makespan: 改进 11.92%」「缓存命中率: 提升 30.21 个百分点」（此前为方向反转的错误值）。
 - `make check` / `make symbol-check` 均退出码 0。
+- `make docs-check` → **25 个 Markdown 文件 / 182 条链接 / 失效 0 条**。
+- `make report`（latexmk + xelatex）→ **25 页 PDF，0 error / 0 missing character**。
 - CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）已接入上述全部检查与模拟器回放。
 
 ### 已知遗留（Known Issues）

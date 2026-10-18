@@ -1125,7 +1125,7 @@ make test
 
 #### 1. 上下文切换优化
 
-![上下文切换对比](test_visualization/performance_comparison.png)
+![上下文切换对比](../../linux-6.8-main/test_visualization/img/cpu_switches_comparison.png)
 
 详细测试结果显示（见上方测试结果截图）：
 - CFS调度器平均上下文切换次数较高
@@ -1134,7 +1134,7 @@ make test
 
 #### 2. 缓存命中率提升
 
-![缓存性能对比](test_visualization/performance_timeline.png)
+![缓存性能对比](../../linux-6.8-main/test_visualization/img/execution_time_comparison.png)
 
 缓存命中率测试结果（见下方测试结果截图）：
 - L1/L2缓存利用率得到显著改善

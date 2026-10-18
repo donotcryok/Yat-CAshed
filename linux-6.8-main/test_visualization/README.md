@@ -18,27 +18,8 @@
 
 ## 快速开始
 
-### 使用 Makefile（推荐）
-
-```bash
-# 安装Python依赖
-make install-deps
-
-# 检查内核版本
-make check-kernel
-
-# 运行完整测试（编译+测试+可视化）
-make test
-
-# 仅生成可视化图表
-make visualize
-
-# 清理生成文件
-make clean
-
-# 查看帮助
-make help
-```
+> 本目录**没有** Makefile，早期文档中的 `make test` / `make visualize` 等命令不可用。
+> 请使用下面的手动命令（可直接复制执行）。
 
 ### 手动运行
 
@@ -47,13 +28,20 @@ make help
 pip3 install pandas matplotlib seaborn numpy
 
 # 2. 编译测试程序
-gcc -o performance_test performance_test.c -lpthread
+gcc -O2 -o performance_test performance_test.c -lpthread
 
-# 3. 运行性能测试
+# 3. 运行性能测试（需要 root 权限读取调度统计）
 sudo ./performance_test
 
-# 4. 生成可视化图表
+# 4. 生成可视化图表（读取 performance_results.csv）
 python3 visualize_results.py
+```
+
+可选：调试调度行为
+
+```bash
+gcc -O2 -o debug_scheduler debug_scheduler.c -lpthread
+sudo ./debug_scheduler
 ```
 
 ## 输出文件
@@ -148,14 +136,13 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 2. **Python库缺失**
    ```bash
-   make install-deps
-   # 或手动安装
    pip3 install pandas matplotlib seaborn numpy
    ```
 
 3. **调度器不可用**
    - 确认内核版本：`uname -r`
-   - 检查调度器：`cat /proc/sys/kernel/sched_domain/cpu*/domain*/name`
+   - 确认配置：`grep YAT_CASCHED /boot/config-$(uname -r)`
+   - 确认测试程序输出中的策略切换是否成功
 
 4. **编译错误**
    ```bash
@@ -167,27 +154,31 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 这是 Yat_Casched 项目的**初赛版本**，主要目的是验证缓存感知调度的基本可行性。测试配置经过优化，能够在中等压力下清晰展现调度器的性能差异。
 
-## Makefile 功能
+## 一键命令参考
 
-- `install-deps` - 自动安装所需Python库
-- `check-kernel` - 检查当前内核版本和调度器支持
-- `test` - 一键完整测试流程（推荐）
-- `visualize` - 基于已有数据生成图表
-- `clean` - 清理所有生成文件
-- `help` - 显示详细使用说明
+| 目的 | 命令 |
+|------|------|
+| 安装依赖 | `pip3 install pandas matplotlib seaborn numpy` |
+| 编译测试程序 | `gcc -O2 -o performance_test performance_test.c -lpthread` |
+| 运行测试 | `sudo ./performance_test` |
+| 生成图表 | `python3 visualize_results.py` |
+| 清理 | `rm -f performance_test debug_scheduler img/*.png` |
 
 ## 文件结构
 
 ```
 test_visualization/
-├── performance_test.c       # 主测试程序
-├── visualize_results.py     # 可视化脚本
-├── Makefile                # 自动化构建脚本
+├── performance_test.c      # 主测试程序
+├── debug_scheduler.c       # 调度行为调试程序
+├── visualize_results.py    # 可视化脚本
+├── performance_results.csv # 已提交的历史测试数据
 ├── README.md               # 本文档
-├── performance_results.csv # 测试数据（生成）
-└── img/                    # 图表目录（生成）
+└── img/                    # 已生成的图表
     ├── cpu_switches_comparison.png
     ├── execution_time_comparison.png
     ├── cpu_affinity_comparison.png
     └── performance_summary.md
 ```
+
+> 说明：`img/` 下为历史运行产物，已纳入版本控制用于留档；
+> 重新运行 `visualize_results.py` 会覆盖同名文件。

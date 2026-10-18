@@ -41,20 +41,31 @@ feat(simulator): 支持从配置文件读取实验参数
 
 ## 3. 提交前检查
 
+最小门禁（快速）：
+
 ```bash
-make check     # 冲突标记 / 空文件 / 关键文件检查
+make check        # 冲突标记 / 空文件 / 关键文件检查
+make docs-check   # Markdown 相对链接有效性
 ```
 
-涉及模拟器的改动，请额外确认可编译：
+涉及模拟器的改动，请额外确认可编译并通过单测：
 
 ```bash
-make simulator-linux   # 或 Windows 下 build.bat compile
+make simulator-verify   # 编译 + 依赖自检 + 58 条断言 + 快速实验
+# Windows 下可用：cd simulator && build.bat compile && build.bat run
 ```
 
 涉及内核的改动，建议先单文件编译以获得快速反馈：
 
 ```bash
 cd linux-6.8-main && make kernel/sched/yat_casched.o
+make -C .. symbol-check   # 头文件声明 vs 实现定义
+```
+
+全量门禁（提交 PR 前推荐）：
+
+```bash
+make verify-all   # check + docs-check + symbol-check + simulator-verify
 ```
 
 ## 4. 代码风格
@@ -75,8 +86,9 @@ cd linux-6.8-main && make kernel/sched/yat_casched.o
 | 目录/模块结构 | `docs/ARCHITECTURE.md`、`docs/DIRECTORY.md` |
 | 构建/依赖 | `docs/DEVELOPMENT.md`、相关 `Makefile` |
 | 算法/接口 | 模块内 README、`docs/ARCHITECTURE.md` |
-| 方向取舍 | `docs/ROADMAP.md` |
-| 调度器行为变化 | `linux-6.8-main/yat_casched优化记录.md` |
+| 方向取舍 | `docs/ROADMAP.md`、`docs/DIRECTIONS.md` |
+| 实验数据/结论 | `docs/EXPERIMENT_REPORT.md` |
+| 调度器行为变化 | `linux-6.8-main/yat_casched优化记录.md`、`CHANGELOG.md` |
 
 ## 6. 命名约定
 

@@ -60,8 +60,11 @@ cd yat_test_scripts
 > ✅ `kernel/sched/yat_casched.c` 的合并冲突已按「路线 A（决赛 AJLR 版）」解决，文件可直接参与编译。
 > 决议与遗留项见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7–§8。
 >
-> ⚠️ **注意**：本仓库的 `linux-6.8-main/` 整树以 **CRLF** 行尾检入，`make tinyconfig` 会报
-> `init/Kconfig: syntax error`；内核实编译请先 `sed -i 's/\r$//'` 或在干净内核树上套用补丁。
+> ✅ **行尾已归一化**：仓库通过 [`.gitattributes`](../.gitattributes) 强制 `* text=auto eol=lf`，
+> 并提供 [`scripts/normalize_eol.py`](../scripts/normalize_eol.py) 用于历史文件批量修复；
+> 全新 `git clone` 后可直接 `make`，无需再手工 `sed` 去除 CRLF。
+> 若在非 Git 途径（如直接拷贝压缩包）获取源码后仍遇到 CRLF 问题，可执行：
+> `python3 scripts/normalize_eol.py --apply`。
 
 ## 3. 模拟器（`simulator/`，Java 17+）
 
@@ -109,31 +112,41 @@ cd simulator && python3 visualizer/visualize.py result/algorithm_comparison_resu
 ## 4. 论文（`report/paper/`）
 
 ```bash
-# 需安装 TeX Live（含 xelatex，中文需 ctex 宏包）
+# 需安装 TeX Live（含 xelatex + ctex 宏包 + latexmk，可选）
+make report              # 仓库根目录执行，内部优先 latexmk -xelatex
+
+# 或手工执行
 cd report/paper
-xelatex Yat-CAShed.tex
-xelatex Yat-CAShed.tex   # 两遍以生成目录/引用
+latexmk -xelatex Yat-CAShed.tex   # 推荐：自动多遍 + 交叉引用
+# 无 latexmk 时：xelatex Yat-CAShed.tex 执行两遍
 ```
+
+产物：`report/paper/Yat-CAShed.pdf`（约 25 页）。
+章节文件与主文件同目录平铺（`chapter1-intro.tex` … `chapter7-difficulties.tex`），
+主文件通过 `\input{<文件名>}` 引用。
 
 ## 5. 仓库健康检查（CI 同款）
 
 `.github/workflows/ci.yml` 会在 push / PR 时执行：
 
 1. **仓库健康检查**：`bash scripts/check_repo.sh`（冲突标记、空文件、结构）。
-2. **符号一致性检查**：`bash scripts/check_symbols.sh`（头文件声明 vs 实现定义、链接属性一致性）。
-3. **冲突标记独立复核**：扫描 `<<<<<<<` / `>>>>>>>`（**无白名单**，任何冲突一律阻断）。
-4. **模拟器构建与回放**：`make -C simulator compile` → `lib-test` → `test` → `run-quick`。
+2. **文档链接检查**：`python3 scripts/check_docs.py`（Markdown 相对链接必须可解析）。
+3. **符号一致性检查**：`bash scripts/check_symbols.sh`（头文件声明 vs 实现定义、链接属性一致性）。
+4. **冲突标记独立复核**：扫描 `<<<<<<<` / `>>>>>>>`（**无白名单**，任何冲突一律阻断）。
+5. **模拟器构建与回放**：`make -C simulator compile` → `lib-test` → `test` → `run-quick`。
 
 本地等价命令：
 
 ```bash
 make check                     # 或 bash scripts/check_repo.sh
-bash scripts/check_symbols.sh
-make -C simulator verify
+make docs-check                # 或 python3 scripts/check_docs.py
+make symbol-check              # 或 bash scripts/check_symbols.sh
+make simulator-verify
+make verify-all                # 以上全部串行执行
 ```
 
-> 已知遗留项（`yat_global_pool_*` 7 个函数声明未实现）以**非阻断警告**形式输出，
-> 便于在定稿前保持 CI 绿色，同时不掩盖新增问题。合并冲突已全部解决，不再有例外。
+> 合并冲突已全部解决，接口声明与实现一致，无白名单例外。
+> LaTeX 编译未纳入 CI（体积与耗时原因），但 `make report` 已可稳定复现。
 
 ## 6. 命名与提交规范
 

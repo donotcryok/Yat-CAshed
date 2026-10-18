@@ -96,21 +96,22 @@ generator/ CacheHierarchy, EnhancedTaskGenerator, UUnifastDiscard
 allocation/ AllocationMethods, WFD, CacheAware_v1, CacheAware_v2
 analyzer/ PerformanceAnalyzer
 visualizer/ ResultVisualizer.java, visualize.py, requirements.txt
-lib/      30+ 第三方 JAR（JGraphT、fastutil、jackson、commons-math3 等）
+lib/      commons-math3-3.6.1.jar（唯一运行时依赖，见 DEPENDENCIES.md）
+tests/    YatSimulatorTest.java（58 条断言）
 ```
 
-构建入口：[`Makefile`](../simulator/Makefile)（Windows 风格）与 [`build.bat`](../simulator/build.bat)（Windows 批处理）。
-**注意**：Makefile 使用了 `if exist`、反斜杠路径等 cmd.exe 语法，在 Linux/macOS 下无法直接运行。
+构建入口：[`Makefile`](../simulator/Makefile) 为**跨平台 GNU Make**（自动识别 OS/JDK/类路径分隔符），
+Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.bat`](../simulator/build.bat)。
 
 ## 5. 已知结构性问题（本次整理范围）
 
 | 编号 | 问题 | 位置 | 本次是否处理 |
 |------|------|------|--------------|
 | P1 | 合并冲突（10 处） | [`yat_casched.c`](../linux-6.8-main/kernel/sched/yat_casched.c) | ✅ 已按路线 A 解决 |
-| P2 | 头文件声明的 `yat_global_pool_*` 系列**无实现**（7 个） | `yat_casched.h` | 记录（脚本白名单跟踪） |
+| P2 | 历史遗留的 `yat_global_pool_*` 声明已从接口中移除 | `yat_casched.h` | ✅ 已清理 |
 | P3 | `sched.h` 重复 `#include <linux/sched/yat_casched.h>` | `sched.h:23` 与 `:76` | ✅ 修复 |
 | P4 | 空源文件 | `boot_test_scripts/yat_scheduler_test.c`、`test_simple_history_validation.c`、`report/paper/Yat-CAShed_new.tex` | ✅ 清理 |
 | P5 | 实现文档重复分叉 | 内核目录 vs `report/paper` | 记录 + 索引 |
-| P6 | 模拟器构建脚本仅支持 Windows | `simulator/Makefile` | 记录 + 顶层封装 |
+| P6 | 模拟器构建脚本仅支持 Windows | `simulator/Makefile` | ✅ 已改写为跨平台 GNU Make |
 | P7 | 缺少 LICENSE / CONTRIBUTING / CI / .editorconfig | 仓库根 | ✅ 新增 |
 | P8 | 调度类顺序依赖 `vmlinux.lds.h` 手工插段，脆弱 | `vmlinux.lds.h:135` | 记录 |

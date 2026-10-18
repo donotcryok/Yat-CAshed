@@ -24,11 +24,13 @@ Yat-CAShed 基于 AJLR（Allocation of parallel Jobs based on Learned cache Rece
 | 文档 | 说明 |
 |------|------|
 | [`docs/README.md`](docs/README.md) | 文档总索引（入口） |
+| [`docs/PROJECT_AUDIT.md`](docs/PROJECT_AUDIT.md) | 工程化审计快照（现状 / 问题清单 / 处理状态） |
+| [`docs/DIRECTIONS.md`](docs/DIRECTIONS.md) | 改进与开发方向建议（候选方向 + 推荐路线） |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 系统架构与模块说明 |
 | [`docs/DIRECTORY.md`](docs/DIRECTORY.md) | 目录结构详解 |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | 环境搭建与构建指南 |
-| [`docs/CONFLICT_ANALYSIS.md`](docs/CONFLICT_ANALYSIS.md) | ✅ 合并冲突分析与解决记录（已按路线 A 解决） |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 改进与开发方向规划 |
+| [`docs/CONFLICT_ANALYSIS.md`](docs/CONFLICT_ANALYSIS.md) | 合并冲突分析与解决记录（已按路线 A 解决） |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 任务化改进清单（P0–P3） |
 | [`docs/EXPERIMENT_REPORT.md`](docs/EXPERIMENT_REPORT.md) | 模拟器实验报告（指标 / 统计 / 复现） |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 贡献规范（分支 / 提交 / 代码风格） |
 
@@ -40,12 +42,13 @@ Yat-CAShed 基于 AJLR（Allocation of parallel Jobs based on Learned cache Rece
 ```
 Yat-CAShed/
 ├── README.md                    # 本文件
-├── LICENSE                      # 许可证说明（分模块）
-├── CONTRIBUTING.md              # 贡献规范
-├── Makefile                     # 顶层编排（检查 / 模拟器 / 可视化）
+├── LICENSE / CONTRIBUTING.md    # 许可证说明 / 贡献规范
+├── CHANGELOG.md                 # 变更日志
+├── Makefile                     # 顶层编排（check / docs-check / simulator / report）
+├── .editorconfig / .gitattributes / .gitignore
 ├── docs/                        # 工程化文档体系（入口见 docs/README.md）
-├── scripts/                     # 仓库运维脚本（check_repo.sh 等）
-├── .github/workflows/           # CI（仓库健康检查 + 模拟器构建）
+├── scripts/                     # 仓库运维脚本（check_repo / check_symbols / check_docs / normalize_eol）
+├── .github/workflows/ci.yml     # CI（仓库检查 + 文档链接 + 符号一致性 + 模拟器回放）
 ├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat_Casched 调度器
 │   ├── kernel/sched/yat_casched.c          # 调度器核心实现（AJLR，冲突已解决）
 │   ├── include/linux/sched/yat_casched.h   # 调度器头文件
@@ -54,15 +57,16 @@ Yat-CAShed/
 │   ├── boot_test_scripts/                   # 用户态测试程序
 │   ├── yat_test_scripts/                    # QEMU 测试环境脚本
 │   └── test_visualization/                  # 性能测试与可视化
-├── simulator/                   # 缓存感知调度算法模拟器（Java）
+├── simulator/                   # 缓存感知调度算法模拟器（Java 17+）
 │   ├── Simulator.md                          # 模拟器详细文档
 │   ├── AlgorithmComparisonExperiment.java    # 实验入口
 │   ├── allocation/                           # WFD / CacheAware 算法实现
-│   └── lib/                                  # 第三方依赖
+│   ├── tests/                                # 单元测试（58 断言）
+│   └── lib/                                  # commons-math3（唯一运行时依赖）
 └── report/                      # 论文、报告与参考资料
-    ├── paper/                    # 毕业论文 LaTeX 源码
+    ├── paper/                    # 毕业论文 LaTeX 源码（章节文件平铺）
     ├── prompt_md/                # 分析笔记与计划
-    └── *.pdf / *.tex             # 参考论文与讲稿
+    └── *.pdf / *.pptx            # 参考论文与早期材料
 ```
 
 ## 核心组件
@@ -175,19 +179,31 @@ cd yat_test_scripts
 ## 仓库健康检查
 
 ```bash
-make check            # 或 bash scripts/check_repo.sh
-bash scripts/check_symbols.sh   # 内核头文件/实现符号一致性（静态，容忍已知待决策项）
+make check        # 冲突标记 / 空文件 / 关键文件
+make docs-check   # Markdown 相对链接有效性
+make symbol-check # 内核头文件声明 vs 实现定义
+make verify-all   # 以上 + 模拟器全套验证（CI 等价）
 ```
 
-- `check_repo.sh`：冲突标记、空文件、编码、目录规范等守卫
-- `check_symbols.sh`：核对 `yat_casched.h` 声明与 `yat_casched.c` 定义，暴露 `yat_global_pool_*` 等缺口
-- 两者均已接入 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）
+- [`scripts/check_repo.sh`](scripts/check_repo.sh)：冲突标记、空文件、关键文件守卫
+- [`scripts/check_docs.py`](scripts/check_docs.py)：全仓库自维护 Markdown 的相对链接检查
+- [`scripts/check_symbols.sh`](scripts/check_symbols.sh)：核对 `yat_casched.h` 声明与 `yat_casched.c` 定义
+  （当前 26 个声明 / 26 个非 static 定义 / 17 个 static 定义，全部一致）
+- 三者均已接入 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）
+
+论文编译：
+
+```bash
+make report      # 优先 latexmk -xelatex，产物 report/paper/Yat-CAShed.pdf
+```
 
 ## 主要依赖
 
 - **内核**：GCC/Binutils、bison、flex、libssl-dev、libelf-dev、bc、dwarves、QEMU、busybox
-- **模拟器**：JDK 17+（`openjdk-17-jdk-headless` 即可），第三方 JAR 位于 `simulator/lib/`（JGraphT、commons-math3、fastutil 等）
+- **模拟器**：JDK 17+（`openjdk-17-jdk-headless` 即可）；
+  运行时依赖仅 [`simulator/lib/commons-math3-3.6.1.jar`](simulator/lib)（详见 [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md)）
 - **可视化**：Python 3 + matplotlib（必需）/ pandas、seaborn（可选，缺失时自动降级）；安装 `pip install -r simulator/visualizer/requirements.txt`
+- **论文**：TeX Live（`xelatex`、`ctex`、`latexmk` 可选）
 
 ## 许可证
 
