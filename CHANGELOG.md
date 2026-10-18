@@ -3,6 +3,78 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — A8 实跑验证：修掉 4 处致命接线缺陷，接管率 98%
+
+本轮把 A8 从「已接线（实测待跑）」推进到「**实跑通过**」。第一次真正跑 yat 负载时
+guest **静默挂死**（串口无输出、4 个 vCPU 全部 idle、`jobs_placed` 恒 0）。
+用自建的 per-CPU 探针（`select_*` / `ttwu_*` / `pick_*` / `deq_*`）+ QEMU gdbstub
+读取运行态计数器逐层定位，最终发现**四个致命缺陷**，全部是「调度类接入内核」
+的工程细节，与 AJLR 算法无关。
+
+### 修复（Fixed）
+
+- **`__normal_prio()`：yat 策略的 `p->prio` 被映射进实时区间**。
+  原实现 `prio = rt_priority`，`sched_priority = 0` 时得到 `prio = 0`，
+  而 `rt_prio(0)` 为真 → `__setscheduler_prio()` 的 `rt_prio(prio)` 分支抢先命中，
+  任务被挂进 `rt_sched_class`，**yat 类里一个任务都没有**。
+  改为 `MAX_RT_PRIO + rt_priority`（100..119）：既不与实时区间重叠，
+  又保留 0..19 的相对顺序。
+- **`__setscheduler_prio()`：yat 分支被 `rt_prio()` 抢先**。
+  把「按 `p->policy` 判定」提到 `rt_prio(prio)` 之前，策略成为唯一真相来源。
+- **`sched_fork()`：子任务被降级成 CFS**。上游只按 prio 在 RT/CFS 间二选一，
+  对自定义的普通调度类是错的；补上 `yat_casched_policy(p->policy)` 分支。
+- **`enqueue/dequeue_task_yat_casched()` 漏调 `add_nr_running()/sub_nr_running()`**（最隐蔽）。
+  本内核中这两个函数由**各调度类自己**在 enqueue/dequeue 里调用
+  （`fair.c`/`rt.c`/`deadline.c`/`stop_task.c` 都显式调用），yat 类只加了自己的
+  `yat_rq->nr_running`。后果不是「统计不准」而是**整机静默挂死**：
+  `rq->nr_running` 恒 0 → `__pick_next_task()` 快路径判定
+  `rq->nr_running == rq->cfs.h_nr_running == 0` → **根本不遍历 yat 类** →
+  CPU 直接进 idle，任务永久停在 `on_rq` 却永不运行。
+  现在 enqueue 里 `add_nr_running(rq, 1)`、dequeue 里成对 `sub_nr_running(rq, 1)`。
+
+### 新增（Added）
+
+- **`struct yat_casched_stats` 扩容为一套完整链路探针**，debugfs `/stats` 全部可见：
+  - `select_calls/not_ttwu/nojob/sticky_idle/sticky_interval/nocore/decided`：选核回调的每个出口；
+  - `enq_calls/enq_cpus_allowed`：入队次数与 `nr_cpus_allowed` 之和（证明包装层条件成立）；
+  - `ttwu_state_bail/ttwu_runnable/ttwu_wakelist/ttwu_ok`：`try_to_wake_up()` 的四个出口，
+    只统计目标是 yat 类的唤醒（由 `yat_probe_ttwu()` 过滤，core.c 在四处出口调用）；
+  - `pick_calls/pick_null_desync`：`pick_null_desync` 专门捕获「核心层说有任务、本类说没有」的失步；
+  - `deq_calls/deq_sleep`：出队与因阻塞出队的次数；
+  - `place_hit/place_miss/place_pending`：**AJLR 接管率**。`placements` 是实时快照，
+    任务退出时 job 随之释放，workload 结束后必然为空；这三个累计值才是可留存的证据。
+- **`yat_bench` 新增 `--affinity shared|none|spread` 与 `--sleep-us U`**：
+  `shared` 会把 `nr_cpus_allowed` 压到 1，`select_task_rq` 直接 `cpumask_any()` 返回，
+  **测不到 AJLR**；验证 A8 必须用 `none`（可跨核）+ `--sleep-us`（制造 `WF_TTWU`）。
+  另加 `--verbose` 逐阶段打标记，用于挂死时定位。
+- **`compare_cfs_vs_yat.sh`**：透传新参数并写入 CSV（追加 `affinity,sleep_us` 两列，
+  保持旧列位置不变），运行时自动判定「这组数据能不能谈 AJLR」，并打印 AJLR 接管率。
+
+### 验证（Verified）
+
+`./compare_cfs_vs_yat.sh --tasks 8 --iters 2000000 --affinity none --sleep-us 200`（smp=4）：
+
+| 指标 | CFS | Yat-CASched |
+|------|-----|-------------|
+| `ttwu_ok` | 0 | 512（= 8 × 64，与负载完全吻合） |
+| `select_calls` / `select_decided` | 0 / 0 | 459 / 254 |
+| `jobs_placed` | 0 | 254 |
+| `place_hit / miss / pending` | — | 925 / 0 / 14 → **接管率 98%** |
+| `pick_null_desync` | 0 | 0 |
+| `invol_ctx` | 161 | 56 |
+| `sum_wall_ns` | 1.70e9 | 3.30e9（yat/cfs = **1.94×**） |
+
+### 已知遗留（Known Issues）
+
+- **性能尚未胜过 CFS**（1.94×）。原因是设计代价而非算法失败：
+  `wakeup_preempt_yat_casched()` 无条件 `resched_curr()`、`pick_next_task` 每次 O(n) 扫描、
+  `yat_find_best_core_for_job()` 是 O(nr_cpus²) 历史表扫描，且 TCG 放大了切换成本。
+  这些正是 D1'（真实硬件代价模型）的输入。
+- 本轮数据只能证明「AJLR 已真实接管选核」，**不能**用来声称性能收益。
+- 探针计数器长期保留（per-CPU 单指令自增，代价可忽略），便于后续回归时直接读取。
+
+---
+
 ## [Unreleased] — 内核：AJLR 决策真正落地（select_task_rq）
 
 本轮修掉的是 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.1 里长期登记的

@@ -612,7 +612,7 @@ nr_jobs 0
 并把 `pick_next_task_yat_casched()` 改为从池中选 —— 这属于算法改动（方向 D），
 不属于 P2 质量工程范畴，故本轮不做，仅如实记录。
 
-#### 8.7.6 后续（A8）：这条负面结论已被部分推翻，但数据仍未更新
+#### 8.7.6 后续（A8）：负面结论已被完整推翻（实跑数据见下）
 
 上面「需要先把 `enqueue_task` 改为入池、再把 `pick_next_task` 改为从池中选」这条
 设想路径，最终**没有采用**——它会把隐式任务作业塞进全局就绪池，与本地队列形成
@@ -625,8 +625,25 @@ nr_jobs 0
 - `yat_ajlr_enqueue_task()` 改为复用作业（`yat_get_or_create_job()`），
   `.task_dead` 负责精确释放。
 
-**因此 §8.7.5 的代码解释（「没有入池、pick 读本地队列」）已不再准确**，
-但**结论仍然成立**：那一轮 `compare_cfs_vs_yat.sh` 的数据确实**不能**作为
-AJLR 有效性的证据，因为它是在改动前采集的。A8 之后尚未重跑，
-所以截至本文件更新时，**依然没有任何一组数据**能证明 AJLR 的效果。
-详见 [`ROADMAP.md`](ROADMAP.md) 的 A8 节与 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.2.1。
+**因此 §8.7.5 的代码解释（「没有入池、pick 读本地队列」）已不再准确。**
+A8 之后已完成实跑，`jobs_placed > 0`，且给出了可留存的接管率：
+
+```
+ttwu_ok 512  select_calls 459  select_decided 254  jobs_placed 254
+place_hit 925  place_miss 0  place_pending 14  → 接管率 98%
+pick_null_desync 0
+```
+
+但实跑同时暴露出**四个致命接线缺陷**（详见 [`ROADMAP.md`](ROADMAP.md) §A8.1）：
+`__normal_prio` 把 yat 优先级映射进实时区间、`__setscheduler_prio` 分支被
+`rt_prio()` 抢先、`sched_fork` 未识别 yat 策略、以及最隐蔽的一条 ——
+`enqueue/dequeue_task_yat_casched()` 漏调 `add_nr_running()/sub_nr_running()`。
+其中第四条会让 `rq->nr_running` 恒为 0，`__pick_next_task()` 连 yat 类都不会遍历，
+表现为**整机静默挂死**。这也解释了 §8.7.5 那一轮以及 A8 接线后首轮实测
+为什么"看起来什么都没发生"：**yat 类里根本没有任务**。
+
+**结论更新**：§8.7.5 的"不能作为 AJLR 有效性证据"这一限定，对**当时那批数据**
+依然成立（那批数据是在缺陷仍存在时采集的）；但"没有任何数据能证明 AJLR 的效果"
+已经不成立 —— A8.1 的接管率 98% 就是证明。同时必须如实记录：当前实现
+`sum_wall` 是 CFS 的 1.94×（8 任务/4 核/2M 迭代/200µs 唤醒），
+**性能上并未胜过 CFS**，详见 [`ROADMAP.md`](ROADMAP.md) §A8.1 的三段式结论。

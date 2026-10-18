@@ -71,16 +71,34 @@ graph TD
 
 ```
 /sys/kernel/debug/yat_casched/
-├── stats        # 7 项 per-CPU 计数器求和 + nr_cpu_ids
+├── stats        # per-CPU 计数器求和（分四组，见下表）+ nr_cpu_ids
 ├── ready_pool   # 就绪池快照
 ├── dags         # DAG 列表 + 每个 DAG 的 waiting/ready/running 分布
-└── placements   # ★ 决策采纳率：job_id pid prio assigned actual verdict + ok/denied/pending 汇总
+└── placements   # 决策采纳率实时快照：job_id pid prio assigned actual verdict + 汇总
 ```
 
-`placements` 与 `stats` 的分工必须分清：`stats` 里的 `jobs_placed` 只统计
-「**算过**多少次放置」，而 `placements` 的 `verdict` 统计的是「**算完有没有被采纳**」
-（`ok` = 任务的 `task_cpu()` 等于 `assigned_cpu`；`denied` = 不等；
-`pending` = 尚未落到任何 CPU）。AJLR 的实际接管率只能看后者。
+`stats` 的计数器按「决策链路」分组（A8 实跑时就是靠它们把整机挂死定位到四个缺陷的）：
+
+| 组 | 字段 | 回答的问题 |
+|----|------|-----------|
+| 负载均衡 | `balance_runs/balance_skips/jobs_placed/jobs_nocore` | 全局分配跑了几轮、成功/无核各多少 |
+| 历史的/加速表 | `history_records/accel_inserts/accel_dup` | CRP 数据是否在积累 |
+| 选核回调 | `select_calls/select_not_ttwu/select_nojob/select_sticky_idle/select_sticky_interval/select_nocore/select_decided` | 回调**有没有被调用**、在每个出口退出多少次 |
+| 唤醒链路 | `ttwu_state_bail/ttwu_runnable/ttwu_wakelist/ttwu_ok` | `try_to_wake_up()` 从哪个出口离开（只统计 yat 任务） |
+| 入队/出队 | `enq_calls/enq_cpus_allowed/deq_calls/deq_sleep` | 包装层条件是否成立（平均可运行 CPU 数 = 前两者之商）、阻塞出队次数 |
+| 选取 | `pick_calls/pick_null_desync` | `pick_null_desync > 0` 即「核心层说有任务、本类说没有」的计数失步 |
+| 接管率 | `place_hit/place_miss/place_pending` | **AJLR 决策最终有没有被执行**（累计值） |
+
+读法要点：
+
+- `select_calls == 0` 且 `enq_calls > 0`：任务确实进了 yat 类，但**唤醒没走到选核**
+  （看 `ttwu_*` 落到哪个出口）；
+- `pick_null_desync > 0`：`rq->nr_running` 与本类 `nr_running` 失步，
+  通常意味着漏调 `add_nr_running()/sub_nr_running()` —— 这会让 CPU 直接进 idle、
+  任务永不运行（静默挂死），是本项目踩过的真实坑；
+- `placements` 是**实时快照**：任务退出时 job 被 `task_dead` 释放，
+  所以 workload 结束后表必然为空。**可留存的接管率证据是 `place_hit/miss/pending`**。
+  `jobs_placed` 只统计「算过多少次放置」，`place_hit` 才统计「算完执行了多少次」。
 
 - 注册时机：`late_initcall(yat_debugfs_init)`。debugfs 本身是 `core_initcall`，
   `sched_init()` 执行时它还不存在，因此不能在 `sched_init()` 里挂节点。

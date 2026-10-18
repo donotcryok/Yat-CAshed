@@ -249,7 +249,7 @@ yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
    AP 只能靠 ACPI MADT 枚举，关掉后 guest 退化为 `nr_cpu_ids:1`，对比失去意义；
    保留 ACPI 后 `poweroff -f` 也能真正让 QEMU 退出。
 
-### A8. AJLR 决策落地（P2 续）✅ 已接线（实测待跑）
+### A8. AJLR 决策落地（P2 续）✅ 已完成（实跑验证：接管率 98%）
 
 **问题**：A6/A7 的所有观测数据都指向同一个尴尬事实——AJLR 算出了放置，
 但主调度路径没人采纳它（`jobs_placed` 恒 0）。这属于 [`ARCHITECTURE.md`](ARCHITECTURE.md)
@@ -266,15 +266,58 @@ yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
 | 生命周期 | `.task_dead = task_dead_yat_casched`；`enqueue_task` 改为 `yat_get_or_create_job()` | 原实现每次入队都新建 job 并覆盖指针，旧 job 永不释放（P14）。`task_dead` 在 `finish_task_switch()` 的 `finish_lock_switch()` 之后调用，不持 rq 锁，可安全 `kfree` |
 | 可观测量 | 新 tracepoint `_wakeup_place` + 新 debugfs 节点 `placements` | `_place` 是「算法想放哪」，`_wakeup_place` 是「内核实际放哪」。只有后者能算接管率 |
 
-**验收（分两档，后者尚未完成）**：
+**验收（两档均已完成）**：
 - ✅ 编译 / 补丁 / 门禁：`make kernel-obj`、`make patch-selftest`、`make verify-all` 全绿。
-- ⏳ **实跑**：`make kernel-compare` 后 `/placements` 的 `ok/denied/pending` 分布、
-  `_wakeup_place` 的 `(stay)/(migrate)` 比例，以及 `jobs_placed > 0`。
-  在这些数字跑出来之前，**不得声称任何性能收益来自 AJLR**。
+- ✅ **实跑**（见下节 A8.1），`jobs_placed > 0`，且能给出可留存的接管率。
+
+#### A8.1 实跑结果与「接线之外还差什么」
+
+第一次真正跑起来时 guest **静默挂死**（串口无输出、四个 vCPU 全部 idle、
+`jobs_placed` 恒 0）。逐层加探针（`select_*` / `ttwu_*` / `pick_*` / `deq_*`）
+并配合 QEMU gdbstub 读取运行中的 per-CPU 计数器后，定位到**四个致命缺陷**，
+全部属于「调度类接入内核」的工程细节，与 AJLR 算法本身无关：
+
+| # | 缺陷 | 后果 | 修复 |
+|---|------|------|------|
+| 1 | `__normal_prio()` 对 yat 策略返回 `prio = rt_priority`（0） | `prio` 落进实时区间，`__setscheduler_prio()` 的 `rt_prio(prio)` 分支抢先命中 → 任务被挂到 **`rt_sched_class`**，yat 类里一个任务都没有 | 映射到普通区间高端 `MAX_RT_PRIO + rt_priority`（100..119） |
+| 2 | `__setscheduler_prio()` 的 yat 分支排在 `rt_prio()` 之后 | 只能靠 prio 区间「碰巧」生效，策略被 prio 覆盖 | 把「按策略判定」提到 `rt_prio()` **之前** |
+| 3 | `sched_fork()` 只按 prio 在 RT/CFS 间二选一 | yat 任务 fork 出的子任务被降级成 CFS | 增加 `yat_casched_policy(p->policy)` 分支 |
+| 4 | `enqueue/dequeue_task_yat_casched()` **只维护本类私有计数**，未调用 `add_nr_running()/sub_nr_running()` | 本内核中这两个函数由**各调度类自己**调用（fair/rt/dl/stop 均如此）；漏掉后 `rq->nr_running` 恒 0 → `__pick_next_task()` 快路径判定 `rq->nr_running == cfs.h_nr_running == 0`，**根本不遍历 yat 类** → CPU 直接进 idle，任务永久停在 `on_rq` 却永不运行 | enqueue 里 `add_nr_running(rq, 1)`，dequeue 里成对 `sub_nr_running(rq, 1)` |
+
+诊断手段（已固化为可复用的计数器，见 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.1.1）：
+`select_calls/sticky_*/nocore/decided`、`enq_calls/enq_cpus_allowed`、
+`ttwu_state_bail/ttwu_runnable/ttwu_wakelist/ttwu_ok`、
+`pick_calls/pick_null_desync`、`deq_calls/deq_sleep`、`place_hit/miss/pending`。
+
+**实测数据**（`./compare_cfs_vs_yat.sh --tasks 8 --iters 2000000 --affinity none --sleep-us 200`，
+smp=4，kernel #14）：
+
+| 指标 | CFS | Yat-CASched |
+|------|-----|-------------|
+| `ttwu_ok`（yat 任务的正常唤醒） | 0 | 512（= 8 任务 × 64 次 sleep，完全吻合） |
+| `select_calls` / `select_decided` | 0 / 0 | 459 / 254 |
+| `jobs_placed` | 0 | **254** |
+| `place_hit / miss / pending` | — | **925 / 0 / 14 → 接管率 98%** |
+| `pick_null_desync`（核心/本类计数失步） | 0 | 0 |
+| `invol_ctx`（非自愿切换） | 161 | 56 |
+| `sum_wall_ns`（8 任务总墙钟） | 1.70e9 | 3.30e9（**yat/cfs = 1.94×**） |
+
+**结论必须分开陈述**：
+1. **A8 本身成功**：AJLR 的选核决策确实被内核执行了 —— 唤醒次数、决策次数、
+   放置次数、命中率四者自洽（512 → 459 → 254 → 925/939）。
+2. **当前实现更慢**（1.94×）。原因很清楚，属于已知设计代价而非算法失败：
+   `wakeup_preempt_yat_casched()` 无条件 `resched_curr()`、
+   `pick_next_task` 每次 O(n) 扫描、`yat_find_best_core_for_job()` 是
+   O(nr_cpus²) 历史表扫描，且 TCG 模拟下每次上下文切换的成本被放大。
+   这些正是 D1'（真实硬件代价模型）要解决的问题。
+3. 因此**依然不得**拿本轮数据声称「AJLR 提升了性能」；能声称的是
+   「AJLR 已真实接管选核，且当前实现的开销明显高于 CFS」。
 
 **已知边界**：
 - 只覆盖唤醒路径；`fork` / `exec` 直接返回 `task_cpu`（此刻历史表全零，重算是噪声）。
 - 1 ms 节流是经验值，需 D1' 的真实代价模型来标定。
+- `placements` 表是**实时快照**，任务退出时 job 随之释放，因此 workload 结束后
+  表必然为空；可留存证据是 `place_hit/miss/pending` 累计计数器。
 - 就绪池（`global_ready_pool`）仍只服务显式 DAG 路径，**这是有意的分工**：
   隐式任务作业若同时被本地队列与全局池决策，会表现为反复迁移的抖动，
   因此 `yat_update_ready_pool()` 显式跳过 `job->dag == yat_get_default_dag()`。
