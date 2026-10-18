@@ -290,15 +290,18 @@ yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
 
 ## 3. 方向 C：文档与仓库治理（P1）
 
-- **统一命名**：确定唯一项目名（建议 `Yat-Casched`），全仓库统一，避免 `Yat_Casched`/`Yat_CAShed`/`YAT_CASCHED` 混用。
-- **单一事实来源**：两份“完整实现文档”合并为一份（按冲突路线的最终选择更新），另一份标注 `[已归档]` 并移至 `docs/archive/`。
+- ✅ **统一命名**：规范名定为 **`Yat-CAShed`**（依据外部不可变标识：git remote、CI badge、论文标题、`report/paper/Yat-CAShed.tex`）。
+  已清理散文层残留，并新增机械门禁 [`scripts/check_names.py`](../scripts/check_names.py)（`make name-check`）。
+  内核代码标识符（`yat_casched`、`SCHED_YAT_CASCHED`）是独立命名空间，不跟显示名。
+- ✅ **单一事实来源**：两份“完整实现文档”已 `git mv` 到 [`docs/archive/`](archive/README.md)，
+  加归档 banner、正文保留原样（不跟随后续修改）；事实来源收敛到 `yat_casched.c` / `ARCHITECTURE.md` / `CHANGELOG.md`。
 - ✅ **变更日志**：[`CHANGELOG.md`](../CHANGELOG.md) 已就位（Keep a Changelog 风格，含 `Unreleased` 段与「已知遗留」）。
-- **LICENSE**：内核部分 GPL-2.0，模拟器/文档需明确授权（当前 `README` 只写了“学术使用权以参考论文为准”，法律上不清晰）。
+- ✅ **LICENSE**：[`LICENSE`](../LICENSE) 已分模块澄清——内核新增/修改文件 GPL-2.0；模拟器与自有文档明确为学术研究与教学使用（保留所有权利）；第三方素材（参考论文 PDF、`simulator/lib/*.jar`）归属各自作者。
 - ✅ **CONTRIBUTING.md**：[`CONTRIBUTING.md`](../CONTRIBUTING.md) 已含分支模型、`feat:/fix:/chore:` 提交规范、提交前检查清单、文档同步矩阵。
 - ✅ **CI**：[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 已覆盖 ①冲突标记 ②模拟器编译与回放 ③**文档链接检查**（`scripts/check_docs.py`）。
 - ✅ **文档门禁**：`make docs-check`（25 文件 / 261 链接 / 0 失效），与 `make check`、`make symbol-check`
   一并由 `make verify-all` 串联。
-- ⬜ **仍待处理**：项目名统一（`Yat-Casched` vs `Yat_CAShed` 仍混用）、两份“完整实现文档”的归档收敛。
+- ✅ 方向 C 本轮已全部收口（命名 / 归档 / LICENSE），并留下 `make name-check` 作为长期回归门禁。
 
 > 方向 C 的具体取舍（为什么先做门禁、为什么不立刻重写历史）见 [`DIRECTIONS.md`](DIRECTIONS.md)。
 

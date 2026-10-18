@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 KERNEL_IMAGE="$PROJECT_ROOT/arch/x86/boot/bzImage"
 INITRAMFS_IMAGE="$PROJECT_ROOT/boot_test_scripts/initramfs_complete.cpio.gz"
 
-echo "=== Yat_Casched 调度器一键测试环境启动脚本 ==="
+echo "=== Yat-CAShed 调度器一键测试环境启动脚本 ==="
 
 # 检查内核镜像和initramfs
 if [ ! -f "$KERNEL_IMAGE" ]; then

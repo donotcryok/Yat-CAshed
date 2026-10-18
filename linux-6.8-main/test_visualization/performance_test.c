@@ -18,7 +18,7 @@
 
 typedef struct {
     int thread_id;
-    int scheduler_type;  // 0: CFS, 1: Yat_Casched
+    int scheduler_type;  // 0: CFS, 1: Yat-CAShed
     int cpu_switches;
     int cache_misses;
     double execution_time;
@@ -47,11 +47,11 @@ void* cache_intensive_task(void* arg) {
     // 设置调度策略
     if (data->scheduler_type == 1) {
         if (sched_setscheduler(0, SCHED_YAT_CASCHED, &param) == -1) {
-            printf("Thread %d: Failed to set Yat_Casched policy: %s\n", 
+            printf("Thread %d: Failed to set Yat-CAShed policy: %s\n", 
                    data->thread_id, strerror(errno));
             data->scheduler_type = 0; // 回退到CFS
         } else {
-            printf("Thread %d: Using Yat_Casched scheduler\n", data->thread_id);
+            printf("Thread %d: Using Yat-CAShed scheduler\n", data->thread_id);
         }
     } else {
         sched_setscheduler(0, SCHED_OTHER, &param);
@@ -153,7 +153,7 @@ void generate_csv_report(thread_data_t* cfs_results, thread_data_t* yat_results)
                 i, cfs_results[i].cpu_switches, cfs_results[i].execution_time, 
                 cfs_affinity);
         
-        // Yat_Casched结果
+        // Yat-CAShed结果
         max_cpu_usage = 0;
         total_usage = 0;
         
@@ -166,7 +166,7 @@ void generate_csv_report(thread_data_t* cfs_results, thread_data_t* yat_results)
         
         double yat_affinity = total_usage > 0 ? (double)max_cpu_usage / total_usage : 0;
         
-        fprintf(fp, "Yat_Casched,%d,%d,%.3f,%.3f\n", 
+        fprintf(fp, "Yat-CAShed,%d,%d,%.3f,%.3f\n", 
                 i, yat_results[i].cpu_switches, yat_results[i].execution_time, 
                 yat_affinity);
     }
@@ -190,7 +190,7 @@ void print_performance_comparison(thread_data_t* cfs_results, thread_data_t* yat
     printf("\n=== Performance Comparison ===\n");
     printf("Total CPU Switches:\n");
     printf("  CFS: %d\n", total_cfs_switches);
-    printf("  Yat_Casched: %d\n", total_yat_switches);
+    printf("  Yat-CAShed: %d\n", total_yat_switches);
     
     if (total_cfs_switches > 0) {
         double switch_reduction = (double)(total_cfs_switches - total_yat_switches) / total_cfs_switches * 100;
@@ -199,7 +199,7 @@ void print_performance_comparison(thread_data_t* cfs_results, thread_data_t* yat
     
     printf("\nAverage Execution Time:\n");
     printf("  CFS: %.3f seconds\n", total_cfs_time / NUM_THREADS);
-    printf("  Yat_Casched: %.3f seconds\n", total_yat_time / NUM_THREADS);
+    printf("  Yat-CAShed: %.3f seconds\n", total_yat_time / NUM_THREADS);
     
     if (total_cfs_time > 0) {
         double time_improvement = (total_cfs_time - total_yat_time) / total_cfs_time * 100;
@@ -212,7 +212,7 @@ int main() {
     thread_data_t yat_results[NUM_THREADS];
     int repeat = 5;
     
-    printf("=== Yat_Casched Performance Test ===\n");
+    printf("=== Yat-CAShed Performance Test ===\n");
     printf("Testing with %d threads, cache-intensive workload\n", NUM_THREADS);
     
     double avg_cfs_switches = 0, avg_yat_switches = 0;
@@ -225,8 +225,8 @@ int main() {
         run_performance_test(0, "CFS", cfs_results);
         sleep(2);
         
-        // 测试Yat_Casched
-        run_performance_test(1, "Yat_Casched", yat_results);
+        // 测试Yat-CAShed
+        run_performance_test(1, "Yat-CAShed", yat_results);
         
         int total_cfs_switches = 0, total_yat_switches = 0;
         double total_cfs_time = 0.0, total_yat_time = 0.0;
@@ -240,7 +240,7 @@ int main() {
         
         printf("Round %d Results:\n", r+1);
         printf("  CFS:    CPU Switches = %d, Avg Time = %.3f s\n", total_cfs_switches, total_cfs_time/NUM_THREADS);
-        printf("  Yat_Casched: CPU Switches = %d, Avg Time = %.3f s\n", total_yat_switches, total_yat_time/NUM_THREADS);
+        printf("  Yat-CAShed: CPU Switches = %d, Avg Time = %.3f s\n", total_yat_switches, total_yat_time/NUM_THREADS);
         
         avg_cfs_switches += total_cfs_switches;
         avg_yat_switches += total_yat_switches;
@@ -254,12 +254,12 @@ int main() {
     avg_yat_time /= repeat;
     
     printf("\n=== Average Performance over %d runs ===\n", repeat);
-    printf("Total CPU Switches: CFS: %.1f, Yat_Casched: %.1f\n", avg_cfs_switches, avg_yat_switches);
+    printf("Total CPU Switches: CFS: %.1f, Yat-CAShed: %.1f\n", avg_cfs_switches, avg_yat_switches);
     if (avg_cfs_switches > 0) {
         double switch_reduction = (avg_cfs_switches - avg_yat_switches) / avg_cfs_switches * 100;
         printf("  Reduction: %.1f%%\n", switch_reduction);
     }
-    printf("Average Execution Time: CFS: %.3f s, Yat_Casched: %.3f s\n", avg_cfs_time, avg_yat_time);
+    printf("Average Execution Time: CFS: %.3f s, Yat-CAShed: %.3f s\n", avg_cfs_time, avg_yat_time);
     if (avg_cfs_time > 0) {
         double time_improvement = (avg_cfs_time - avg_yat_time) / avg_cfs_time * 100;
         printf("  Performance improvement: %.1f%%\n", time_improvement);

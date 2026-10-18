@@ -19,22 +19,26 @@ Yat-CAShed/
 │   ├── ROADMAP.md               #   改进与开发方向（优先级 + 执行顺序）
 │   ├── DEVELOPMENT.md           #   环境/构建/测试指南
 │   ├── EXPERIMENT_REPORT.md     #   模拟器 WFD vs CacheAware_v2 实验报告
+│   ├── SCHEMA.md                #   CSV schema / 图表命名 / 变更规则
 │   ├── DEPENDENCIES.md          #   simulator/lib 依赖审计
 │   ├── PROJECT_AUDIT.md         #   工程化审计快照（问题清单与处理状态）
 │   ├── DIRECTIONS.md            #   改进与开发方向建议（面向后续开发）
 │   ├── DIRECTORY.md             #   本文件
-│   └── archive/                 #   归档区（历史文档存放说明）
+│   └── archive/                 #   归档区（历史实现文档，非事实来源）
+│       ├── README.md            #     归档政策与历史版本关系
+│       ├── Yat-CAShed-初赛版实现文档.md
+│       └── Yat-CAShed-决赛版实现文档.md
 │
 ├── scripts/
 │   ├── check_repo.sh            # 仓库健康检查（冲突标记/空文件/关键文件）
 │   ├── check_symbols.sh         # 内核头文件声明 vs 实现定义一致性
 │   ├── check_docs.py            # Markdown 相对链接有效性检查
+│   ├── check_names.py           # 项目名拼写一致性检查（规范名 Yat-CAShed）
 │   └── normalize_eol.py         # 历史文件行尾归一化工具
 │
-├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat_Casched 调度类
+├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat-CAShed 调度类
 │   ├── kernel/sched/yat_casched.c         # 调度器核心（AJLR，路线 A）
 │   ├── include/linux/sched/yat_casched.h  # 数据结构与接口声明
-│   ├── Yat_Casched开发文档.md              # 初赛版实现文档
 │   ├── yat_casched优化记录.md              # 迭代优化记录
 │   ├── boot_test_scripts/                 # 用户态 C 测试程序（极简 QEMU 环境）
 │   │   ├── README.md
@@ -60,7 +64,7 @@ Yat-CAShed/
 │   └── yat_simple_test_env/               # 极简 QEMU initramfs 环境
 │
 ├── simulator/                   # Java 缓存感知调度算法模拟器（Java 17+）
-│   ├── AlgorithmComparisonExperiment.java # 实验主入口（8 核 / 100 用例 / 60 任务）
+│   ├── AlgorithmComparisonExperiment.java # 实验主入口（8 核 / 100 用例 / 60 任务，可由 config 覆盖）
 │   ├── LibraryVerification.java           # 依赖库自检
 │   ├── Makefile                           # 跨平台 GNU Make（Linux/macOS/WSL/Git-Bash）
 │   ├── build.bat                          # Windows 批处理备用入口
@@ -69,9 +73,10 @@ Yat-CAShed/
 │   ├── analyzer/     PerformanceAnalyzer
 │   ├── entity/       Node, RecencyProfileReal
 │   ├── generator/    CacheHierarchy, EnhancedTaskGenerator, UUnifastDiscard
-│   ├── parameters/   SystemParameters
+│   ├── parameters/   SystemParameters, ExperimentConfig, YamlSubset
+│   ├── config/       default.yaml（内置默认值）, README.md（加载顺序与字段约束）
 │   ├── visualizer/   ResultVisualizer.java, visualize.py, requirements.txt
-│   ├── tests/        YatSimulatorTest.java（58 条断言）
+│   ├── tests/        YatSimulatorTest.java（102 条断言）
 │   └── lib/          commons-math3-3.6.1.jar（唯一运行时依赖）
 │
 └── report/                      # 论文、报告与参考资料
@@ -79,7 +84,6 @@ Yat-CAShed/
     │   ├── Yat-CAShed.tex       # 主文件（\input 扁平文件名）
     │   ├── cover.tex / abstract.tex / navigation.tex / references.tex
     │   ├── chapter1-intro.tex … chapter7-difficulties.tex
-    │   ├── Yat_Casched_完整实现文档.md  # 决赛版实现文档
     │   ├── Yat-CAShed.pdf       # make report 产物（不纳入版本控制）
     │   ├── yat_CAsched.pdf      # 历史成品（留档）
     │   └── img/SYSULogo.png
@@ -91,6 +95,11 @@ Yat-CAShed/
 
 - `report/paper/` 的章节文件**与主文件同目录平铺**，主文件使用 `\input{cover.tex}` 这类扁平路径；
   历史上的 `chapters/` 子目录并不存在，相关引用已修复。
+- 两份历史「完整实现文档」（原先分别位于 `linux-6.8-main/` 根目录与 `report/paper/`）
+  已归档到 [`archive/`](archive/README.md)（原始路径在归档 README 中登记），
+  正文保留原样、不再跟随后续修改；当前事实来源是
+  [`yat_casched.c`](../linux-6.8-main/kernel/sched/yat_casched.c) 与
+  [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 - `simulator/result/` 为运行产物目录（CSV + PNG），已被 `.gitignore` 忽略。
 - `.gitignore` 中 `*.jar` 规则通过 `!simulator/lib/*.jar` 保留唯一依赖包。
 - 内核树占仓库体积绝大部分；如需瘦身，参见

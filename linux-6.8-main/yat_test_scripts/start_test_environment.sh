@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== Yat_Casched 测试环境启动脚本 ==="
+echo "=== Yat-CAShed 测试环境启动脚本 ==="
 echo ""
 
 # 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
@@ -22,7 +22,7 @@ if [ ! -f "test_with_programs.cpio.gz" ]; then
     cd ..
 fi
 
-echo "🚀 启动包含测试程序的 Yat_Casched 测试环境"
+echo "🚀 启动包含测试程序的 Yat-CAShed 测试环境"
 echo "   - 内核: vmlinux"
 echo "   - 初始化文件系统: test_with_programs.cpio.gz (包含测试程序)"
 echo "   - 内存: 1024MB"

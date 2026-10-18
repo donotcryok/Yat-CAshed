@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Yat_Casched 快速测试脚本
+# Yat-CAShed 快速测试脚本
 # 使用静态 busybox 启动 QEMU 测试环境
 
 # 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
 KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$KERNEL_DIR"
 
-echo "=== Yat_Casched 快速测试启动 ==="
+echo "=== Yat-CAShed 快速测试启动 ==="
 echo "时间: $(date)"
 
 # 检查内核文件
@@ -38,7 +38,7 @@ if [ ! -f "test_static.cpio.gz" ]; then
     cat > test_static_initramfs/init << 'EOF'
 #!/bin/busybox sh
 
-echo "=== Yat_Casched 测试环境启动成功 ==="
+echo "=== Yat-CAShed 测试环境启动成功 ==="
 echo "内核版本: $(busybox uname -r)"
 echo "当前时间: $(busybox date)"
 
@@ -51,9 +51,9 @@ echo "当前时间: $(busybox date)"
 /bin/busybox --install -s
 
 echo ""
-echo "🎯 Yat_Casched 调度器信息:"
+echo "🎯 Yat-CAShed 调度器信息:"
 echo "- 内核版本: $(uname -r)"
-echo "- 调度器类型: Yat_Casched (Cache-Aware Scheduler)"
+echo "- 调度器类型: Yat-CAShed (Cache-Aware Scheduler)"
 
 echo ""
 echo "📋 可用命令："

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Yat-Casched 内核符号一致性检查（静态分析）
+# Yat-CAShed 内核符号一致性检查（静态分析）
 # ------------------------------------------------------------
 # 目标：在不编译、不改动源码的前提下，比对
 #   include/linux/sched/yat_casched.h  的「声明」
@@ -27,7 +27,7 @@ IMPL="${ROOT}/linux-6.8-main/kernel/sched/yat_casched.c"
 fail=0
 
 echo "=========================================="
-echo " Yat-Casched 符号一致性检查"
+echo " Yat-CAShed 符号一致性检查"
 echo "=========================================="
 
 for f in "$HEADER" "$IMPL"; do

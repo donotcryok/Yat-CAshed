@@ -1,5 +1,5 @@
 /*
- * Yat_Casched - AJLR层级化DAG调度器 (Decision Final Version)
+ * Yat-CAShed - AJLR层级化DAG调度器 (Decision Final Version)
  *
  * 基于AJLR (Allocation of parallel Jobs based on Learned cache Recency)思想的
  * 层级化调度器实现：
@@ -1278,7 +1278,7 @@ static void yat_global_init_once(void)
 }
 
 /*
- * 初始化 Yat_Casched 运行队列 - AJLR 版本
+ * 初始化 Yat-CAShed 运行队列 - AJLR 版本
  *
  * 本函数被 sched_init() 按 possible CPU 调用，所以必须区分：
  *   - 每 CPU 私有状态（tasks/nr_running/active_dags/...）：每次都初始化；
@@ -1310,7 +1310,7 @@ void init_yat_casched_rq(struct yat_casched_rq *rq)
 }
 
 /*
- * 检查任务是否属于Yat_Casched调度类
+ * 检查任务是否属于Yat-CAShed调度类
  */
 bool yat_casched_prio(struct task_struct *p)
 {
@@ -1382,7 +1382,7 @@ void enqueue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
 {
     struct yat_casched_rq *yat_rq = &rq->yat_casched;
 
-    /* 初始化任务的 Yat_Casched 实体 */
+    /* 初始化任务的 Yat-CAShed 实体 */
     if (list_empty(&p->yat_casched.run_list)) {
         INIT_LIST_HEAD(&p->yat_casched.run_list);
         p->yat_casched.vruntime = 0;
@@ -1647,7 +1647,7 @@ struct task_struct *pick_task_yat_casched(struct rq *rq)
 
 void switched_to_yat_casched(struct rq *rq, struct task_struct *task)
 {
-    /* 任务切换到Yat_Casched调度类时的处理 */
+    /* 任务切换到Yat-CAShed调度类时的处理 */
 }
 
 void prio_changed_yat_casched(struct rq *rq, struct task_struct *task, int oldprio)
@@ -1656,7 +1656,7 @@ void prio_changed_yat_casched(struct rq *rq, struct task_struct *task, int oldpr
 }
 
 /*
- * Yat_Casched调度类定义
+ * Yat-CAShed调度类定义
  */
 DEFINE_SCHED_CLASS(yat_casched) = {
     //.next_in_same_domain = NULL, // 根据内核版本决定是否需要

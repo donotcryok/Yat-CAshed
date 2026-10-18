@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== Yat_Casched 调度器基本测试指南 ==="
+echo "=== Yat-CAShed 调度器基本测试指南 ==="
 echo ""
 
 echo "🔍 1. 检查调度器是否正确加载："

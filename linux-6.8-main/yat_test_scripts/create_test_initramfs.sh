@@ -23,7 +23,7 @@ BUILD_DIR="test_with_programs_build"  # 只写：编译产物，已被 .gitignor
 OUT_DIR="test_with_programs_initramfs"
 OUT_IMAGE="test_with_programs.cpio.gz"
 
-echo "=== 创建 Yat_Casched 测试 initramfs ==="
+echo "=== 创建 Yat-CAShed 测试 initramfs ==="
 echo "内核根目录: $KERNEL_DIR"
 
 # ---------------------------------------------------------------
@@ -94,7 +94,7 @@ done
 {
     echo '#!/bin/busybox sh'
     echo ''
-    echo 'echo "=== Yat_Casched 测试环境启动成功 ==="'
+    echo 'echo "=== Yat-CAShed 测试环境启动成功 ==="'
     echo 'echo "内核版本: $(busybox uname -r)"'
     echo ''
     echo '/bin/busybox mount -t proc proc /proc'

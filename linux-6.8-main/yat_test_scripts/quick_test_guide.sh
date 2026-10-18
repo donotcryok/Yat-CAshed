@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "=== Yat_Casched 调度器改动验证快速指南 ==="
+echo "=== Yat-CAShed 调度器改动验证快速指南 ==="
 echo ""
 
 echo "🎯 目标：验证哈希表、历史表等核心改动是否正确实现"

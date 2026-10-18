@@ -150,7 +150,7 @@ make verify-all                # 以上全部串行执行
 
 ## 6. 命名与提交规范
 
-- 项目名统一为 **Yat-Casched**（文档标题中可用 `Yat-CAShed`，但代码标识符统一 `yat_casched`）。
+- 项目名统一为 **Yat-CAShed**（文档标题中可用 `Yat-CAShed`，但代码标识符统一 `yat_casched`）。
 - 提交信息采用约定式前缀（沿用现有风格）：
   `feat:` / `fix:` / `docs:` / `chore:` / `refactor:` / `test:`。
 - 详细贡献流程见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。

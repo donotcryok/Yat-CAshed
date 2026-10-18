@@ -9,7 +9,7 @@ Upstream: linux v6.8 (torvalds)
 +
 +# 简化的 initramfs，直接运行测试程序
 +
-+echo "=== 简化 Yat_Casched 测试环境 ==="
++echo "=== 简化 Yat-CAShed 测试环境 ==="
 +
 +# 挂载基本文件系统
 +mount -t proc proc /proc
@@ -19,7 +19,7 @@ Upstream: linux v6.8 (torvalds)
 +echo "环境初始化完成！"
 +
 +# 直接运行测试程序
-+echo "运行 Yat_Casched 测试程序..."
++echo "运行 Yat-CAShed 测试程序..."
 +/bin/test_yat_casched
 +
 +echo "测试完成！"
@@ -32,7 +32,7 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,88 @@
 +#!/bin/busybox sh
 +
-+echo "=== Yat_Casched 测试环境启动 ==="
++echo "=== Yat-CAShed 测试环境启动 ==="
 +echo "Linux 内核启动完成，正在初始化测试环境..."
 +
 +# 挂载基本文件系统
@@ -57,7 +57,7 @@ Upstream: linux v6.8 (torvalds)
 +done
 +
 +echo ""
-+echo "=== Yat_Casched 调度器测试 ==="
++echo "=== Yat-CAShed 调度器测试 ==="
 +echo "系统信息："
 +echo "  内核版本: $(cat /proc/version | cut -d' ' -f1-3)"
 +echo "  CPU 数量: $(cat /proc/cpuinfo | grep processor | wc -l)"
@@ -66,10 +66,10 @@ Upstream: linux v6.8 (torvalds)
 +# 显示调度器信息
 +echo "=== 调度器信息 ==="
 +if [ -f /proc/sched_debug ]; then
-+    echo "检查 Yat_Casched 调度器..."
++    echo "检查 Yat-CAShed 调度器..."
 +    if grep -q "yat_casched" /proc/sched_debug 2>/dev/null; then
-+        echo "✓ 发现 Yat_Casched 调度器！"
-+        echo "Yat_Casched 相关信息："
++        echo "✓ 发现 Yat-CAShed 调度器！"
++        echo "Yat-CAShed 相关信息："
 +        grep -i yat /proc/sched_debug | head -5
 +    else
 +        echo "! 在 /proc/sched_debug 中未找到 yat_casched"
@@ -158,7 +158,7 @@ Upstream: linux v6.8 (torvalds)
 --- /dev/null
 +++ b/boot_test_scripts/README.md
 @@ -0,0 +1,102 @@
-+# Yat_Casched 用户态测试程序（只放 C 源码）
++# Yat-CAShed 用户态测试程序（只放 C 源码）
 +
 +## 目录约定（重要）
 +
@@ -942,7 +942,7 @@ Upstream: linux v6.8 (torvalds)
 --- /dev/null
 +++ b/yat_test_scripts/README.md
 @@ -0,0 +1,213 @@
-+# Yat_Casched QEMU 测试环境（只放脚本）
++# Yat-CAShed QEMU 测试环境（只放脚本）
 +
 +## 目录约定
 +
@@ -1677,7 +1677,7 @@ Upstream: linux v6.8 (torvalds)
 +OUT_DIR="test_with_programs_initramfs"
 +OUT_IMAGE="test_with_programs.cpio.gz"
 +
-+echo "=== 创建 Yat_Casched 测试 initramfs ==="
++echo "=== 创建 Yat-CAShed 测试 initramfs ==="
 +echo "内核根目录: $KERNEL_DIR"
 +
 +# ---------------------------------------------------------------
@@ -1748,7 +1748,7 @@ Upstream: linux v6.8 (torvalds)
 +{
 +    echo '#!/bin/busybox sh'
 +    echo ''
-+    echo 'echo "=== Yat_Casched 测试环境启动成功 ==="'
++    echo 'echo "=== Yat-CAShed 测试环境启动成功 ==="'
 +    echo 'echo "内核版本: $(busybox uname -r)"'
 +    echo ''
 +    echo '/bin/busybox mount -t proc proc /proc'
@@ -1799,7 +1799,7 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,53 @@
 +#!/bin/bash
 +
-+echo "=== Yat_Casched 调度器基本测试指南 ==="
++echo "=== Yat-CAShed 调度器基本测试指南 ==="
 +echo ""
 +
 +echo "🔍 1. 检查调度器是否正确加载："
@@ -1855,7 +1855,7 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,64 @@
 +#!/bin/bash
 +
-+echo "=== Yat_Casched 调度器改动验证快速指南 ==="
++echo "=== Yat-CAShed 调度器改动验证快速指南 ==="
 +echo ""
 +
 +echo "🎯 目标：验证哈希表、历史表等核心改动是否正确实现"
@@ -1922,14 +1922,14 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,99 @@
 +#!/bin/bash
 +
-+# Yat_Casched 快速测试脚本
++# Yat-CAShed 快速测试脚本
 +# 使用静态 busybox 启动 QEMU 测试环境
 +
 +# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
 +KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 +cd "$KERNEL_DIR"
 +
-+echo "=== Yat_Casched 快速测试启动 ==="
++echo "=== Yat-CAShed 快速测试启动 ==="
 +echo "时间: $(date)"
 +
 +# 检查内核文件
@@ -1960,7 +1960,7 @@ Upstream: linux v6.8 (torvalds)
 +    cat > test_static_initramfs/init << 'EOF'
 +#!/bin/busybox sh
 +
-+echo "=== Yat_Casched 测试环境启动成功 ==="
++echo "=== Yat-CAShed 测试环境启动成功 ==="
 +echo "内核版本: $(busybox uname -r)"
 +echo "当前时间: $(busybox date)"
 +
@@ -1973,9 +1973,9 @@ Upstream: linux v6.8 (torvalds)
 +/bin/busybox --install -s
 +
 +echo ""
-+echo "🎯 Yat_Casched 调度器信息:"
++echo "🎯 Yat-CAShed 调度器信息:"
 +echo "- 内核版本: $(uname -r)"
-+echo "- 调度器类型: Yat_Casched (Cache-Aware Scheduler)"
++echo "- 调度器类型: Yat-CAShed (Cache-Aware Scheduler)"
 +
 +echo ""
 +echo "📋 可用命令："
@@ -2031,7 +2031,7 @@ Upstream: linux v6.8 (torvalds)
 +KERNEL_IMAGE="$PROJECT_ROOT/arch/x86/boot/bzImage"
 +INITRAMFS_IMAGE="$PROJECT_ROOT/boot_test_scripts/initramfs_complete.cpio.gz"
 +
-+echo "=== Yat_Casched 调度器一键测试环境启动脚本 ==="
++echo "=== Yat-CAShed 调度器一键测试环境启动脚本 ==="
 +
 +# 检查内核镜像和initramfs
 +if [ ! -f "$KERNEL_IMAGE" ]; then
@@ -2090,7 +2090,7 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,39 @@
 +#!/bin/bash
 +
-+echo "=== Yat_Casched 测试环境启动脚本 ==="
++echo "=== Yat-CAShed 测试环境启动脚本 ==="
 +echo ""
 +
 +# 自动定位内核源码根目录（本脚本位于 <内核根>/yat_test_scripts）
@@ -2112,7 +2112,7 @@ Upstream: linux v6.8 (torvalds)
 +    cd ..
 +fi
 +
-+echo "🚀 启动包含测试程序的 Yat_Casched 测试环境"
++echo "🚀 启动包含测试程序的 Yat-CAShed 测试环境"
 +echo "   - 内核: vmlinux"
 +echo "   - 初始化文件系统: test_with_programs.cpio.gz (包含测试程序)"
 +echo "   - 内存: 1024MB"
@@ -2194,9 +2194,9 @@ Upstream: linux v6.8 (torvalds)
 --- /dev/null
 +++ b/test_visualization/README.md
 @@ -0,0 +1,184 @@
-+# Yat_Casched 性能测试和可视化
++# Yat-CAShed 性能测试和可视化
 +
-+这是 Yat_Casched 缓存感知调度器的性能测试和结果可视化系统。
++这是 Yat-CAShed 缓存感知调度器的性能测试和结果可视化系统。
 +
 +## 测试配置
 +
@@ -2255,9 +2255,9 @@ Upstream: linux v6.8 (torvalds)
 +
 +```
 +=== Average Performance over 10 runs ===
-+Total CPU Switches: CFS: 92.2, Yat_Casched: 65.2
++Total CPU Switches: CFS: 92.2, Yat-CAShed: 65.2
 +  Reduction: 29.3%
-+Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
++Average Execution Time: CFS: 1.255 s, Yat-CAShed: 1.228 s
 +  Performance improvement: 2.2%
 +```
 +
@@ -2269,15 +2269,15 @@ Upstream: linux v6.8 (torvalds)
 +![CPU Switches Comparison](img/cpu_switches_comparison.png)
 +
 +**分析要点：**
-+- Yat_Casched 显著减少了CPU切换次数（减少约29.3%）
++- Yat-CAShed 显著减少了CPU切换次数（减少约29.3%）
 +- 更少的切换次数表明缓存感知调度策略有效维持了任务的CPU亲和性
-+- 这直接体现了Yat_Casched减少缓存失效的设计目标
++- 这直接体现了Yat-CAShed减少缓存失效的设计目标
 +
 +### 执行时间对比
 +![Execution Time Comparison](img/execution_time_comparison.png)
 +
 +**分析要点：**
-+- Yat_Casched 在执行时间上略优于CFS（提升约2.2%）
++- Yat-CAShed 在执行时间上略优于CFS（提升约2.2%）
 +- 性能提升主要来源于减少的CPU迁移和更好的缓存命中率
 +- 在缓存密集型工作负载下，缓存亲和性的价值得到了体现
 +
@@ -2286,13 +2286,13 @@ Upstream: linux v6.8 (torvalds)
 +
 +**分析要点：**
 +- 亲和性分数越接近1.0表示线程更倾向于在固定CPU上运行
-+- Yat_Casched 通常展现出更高的亲和性分数
++- Yat-CAShed 通常展现出更高的亲和性分数
 +- 高亲和性意味着更好的缓存局部性和数据访问效率
 +
 +### 综合评估
 +
 +从三个维度的对比可以看出：
-+1. **缓存亲和性优势明显**：Yat_Casched成功减少了不必要的CPU迁移
++1. **缓存亲和性优势明显**：Yat-CAShed成功减少了不必要的CPU迁移
 +2. **性能提升稳定**：在中等压力测试下表现出一致的性能优势  
 +3. **调度策略有效**：缓存感知机制在实际工作负载中发挥了预期作用
 +
@@ -2302,7 +2302,7 @@ Upstream: linux v6.8 (torvalds)
 +
 +### CPU切换次数（越少越好）
 +- 反映调度器的缓存亲和性策略效果
-+- Yat_Casched应该显示更少的CPU切换次数
++- Yat-CAShed应该显示更少的CPU切换次数
 +
 +### 执行时间（越短越好）  
 +- 整体性能指标
@@ -2314,7 +2314,7 @@ Upstream: linux v6.8 (torvalds)
 +
 +## 系统要求
 +
-+- Linux 内核 6.8+ （包含 Yat_Casched 调度器）
++- Linux 内核 6.8+ （包含 Yat-CAShed 调度器）
 +- GCC 编译器
 +- Python 3.6+ 
 +- 必需的Python库：pandas, matplotlib, seaborn, numpy
@@ -2348,7 +2348,7 @@ Upstream: linux v6.8 (torvalds)
 +
 +## 开发说明
 +
-+这是 Yat_Casched 项目的**初赛版本**，主要目的是验证缓存感知调度的基本可行性。测试配置经过优化，能够在中等压力下清晰展现调度器的性能差异。
++这是 Yat-CAShed 项目的**初赛版本**，主要目的是验证缓存感知调度的基本可行性。测试配置经过优化，能够在中等压力下清晰展现调度器的性能差异。
 +
 +## 一键命令参考
 +
@@ -2402,10 +2402,10 @@ Upstream: linux v6.8 (torvalds)
 +    printf("=== Scheduler Behavior Test ===\n");
 +    printf("Original scheduler: %d\n", original_policy);
 +    
-+    // 尝试设置为Yat_Casched
-+    printf("Attempting to set Yat_Casched scheduler...\n");
++    // 尝试设置为Yat-CAShed
++    printf("Attempting to set Yat-CAShed scheduler...\n");
 +    if (sched_setscheduler(0, SCHED_YAT_CASCHED, &param) == -1) {
-+        printf("Failed to set Yat_Casched: %s\n", strerror(errno));
++        printf("Failed to set Yat-CAShed: %s\n", strerror(errno));
 +        return;
 +    }
 +    
@@ -2413,7 +2413,7 @@ Upstream: linux v6.8 (torvalds)
 +    printf("Current scheduler: %d\n", current_policy);
 +    
 +    if (current_policy == SCHED_YAT_CASCHED) {
-+        printf("Successfully using Yat_Casched!\n");
++        printf("Successfully using Yat-CAShed!\n");
 +        
 +        // 做一些简单的工作并观察行为
 +        printf("Starting simple workload...\n");
@@ -2441,7 +2441,7 @@ Upstream: linux v6.8 (torvalds)
 +        sched_setscheduler(0, SCHED_OTHER, &param);
 +        printf("Restored to CFS scheduler\n");
 +    } else {
-+        printf("Failed to activate Yat_Casched (policy=%d)\n", current_policy);
++        printf("Failed to activate Yat-CAShed (policy=%d)\n", current_policy);
 +    }
 +}
 +
@@ -2472,7 +2472,7 @@ Upstream: linux v6.8 (torvalds)
 +
 +typedef struct {
 +    int thread_id;
-+    int scheduler_type;  // 0: CFS, 1: Yat_Casched
++    int scheduler_type;  // 0: CFS, 1: Yat-CAShed
 +    int cpu_switches;
 +    int cache_misses;
 +    double execution_time;
@@ -2501,11 +2501,11 @@ Upstream: linux v6.8 (torvalds)
 +    // 设置调度策略
 +    if (data->scheduler_type == 1) {
 +        if (sched_setscheduler(0, SCHED_YAT_CASCHED, &param) == -1) {
-+            printf("Thread %d: Failed to set Yat_Casched policy: %s\n", 
++            printf("Thread %d: Failed to set Yat-CAShed policy: %s\n", 
 +                   data->thread_id, strerror(errno));
 +            data->scheduler_type = 0; // 回退到CFS
 +        } else {
-+            printf("Thread %d: Using Yat_Casched scheduler\n", data->thread_id);
++            printf("Thread %d: Using Yat-CAShed scheduler\n", data->thread_id);
 +        }
 +    } else {
 +        sched_setscheduler(0, SCHED_OTHER, &param);
@@ -2607,7 +2607,7 @@ Upstream: linux v6.8 (torvalds)
 +                i, cfs_results[i].cpu_switches, cfs_results[i].execution_time, 
 +                cfs_affinity);
 +        
-+        // Yat_Casched结果
++        // Yat-CAShed结果
 +        max_cpu_usage = 0;
 +        total_usage = 0;
 +        
@@ -2620,7 +2620,7 @@ Upstream: linux v6.8 (torvalds)
 +        
 +        double yat_affinity = total_usage > 0 ? (double)max_cpu_usage / total_usage : 0;
 +        
-+        fprintf(fp, "Yat_Casched,%d,%d,%.3f,%.3f\n", 
++        fprintf(fp, "Yat-CAShed,%d,%d,%.3f,%.3f\n", 
 +                i, yat_results[i].cpu_switches, yat_results[i].execution_time, 
 +                yat_affinity);
 +    }
@@ -2644,7 +2644,7 @@ Upstream: linux v6.8 (torvalds)
 +    printf("\n=== Performance Comparison ===\n");
 +    printf("Total CPU Switches:\n");
 +    printf("  CFS: %d\n", total_cfs_switches);
-+    printf("  Yat_Casched: %d\n", total_yat_switches);
++    printf("  Yat-CAShed: %d\n", total_yat_switches);
 +    
 +    if (total_cfs_switches > 0) {
 +        double switch_reduction = (double)(total_cfs_switches - total_yat_switches) / total_cfs_switches * 100;
@@ -2653,7 +2653,7 @@ Upstream: linux v6.8 (torvalds)
 +    
 +    printf("\nAverage Execution Time:\n");
 +    printf("  CFS: %.3f seconds\n", total_cfs_time / NUM_THREADS);
-+    printf("  Yat_Casched: %.3f seconds\n", total_yat_time / NUM_THREADS);
++    printf("  Yat-CAShed: %.3f seconds\n", total_yat_time / NUM_THREADS);
 +    
 +    if (total_cfs_time > 0) {
 +        double time_improvement = (total_cfs_time - total_yat_time) / total_cfs_time * 100;
@@ -2666,7 +2666,7 @@ Upstream: linux v6.8 (torvalds)
 +    thread_data_t yat_results[NUM_THREADS];
 +    int repeat = 5;
 +    
-+    printf("=== Yat_Casched Performance Test ===\n");
++    printf("=== Yat-CAShed Performance Test ===\n");
 +    printf("Testing with %d threads, cache-intensive workload\n", NUM_THREADS);
 +    
 +    double avg_cfs_switches = 0, avg_yat_switches = 0;
@@ -2679,8 +2679,8 @@ Upstream: linux v6.8 (torvalds)
 +        run_performance_test(0, "CFS", cfs_results);
 +        sleep(2);
 +        
-+        // 测试Yat_Casched
-+        run_performance_test(1, "Yat_Casched", yat_results);
++        // 测试Yat-CAShed
++        run_performance_test(1, "Yat-CAShed", yat_results);
 +        
 +        int total_cfs_switches = 0, total_yat_switches = 0;
 +        double total_cfs_time = 0.0, total_yat_time = 0.0;
@@ -2694,7 +2694,7 @@ Upstream: linux v6.8 (torvalds)
 +        
 +        printf("Round %d Results:\n", r+1);
 +        printf("  CFS:    CPU Switches = %d, Avg Time = %.3f s\n", total_cfs_switches, total_cfs_time/NUM_THREADS);
-+        printf("  Yat_Casched: CPU Switches = %d, Avg Time = %.3f s\n", total_yat_switches, total_yat_time/NUM_THREADS);
++        printf("  Yat-CAShed: CPU Switches = %d, Avg Time = %.3f s\n", total_yat_switches, total_yat_time/NUM_THREADS);
 +        
 +        avg_cfs_switches += total_cfs_switches;
 +        avg_yat_switches += total_yat_switches;
@@ -2708,12 +2708,12 @@ Upstream: linux v6.8 (torvalds)
 +    avg_yat_time /= repeat;
 +    
 +    printf("\n=== Average Performance over %d runs ===\n", repeat);
-+    printf("Total CPU Switches: CFS: %.1f, Yat_Casched: %.1f\n", avg_cfs_switches, avg_yat_switches);
++    printf("Total CPU Switches: CFS: %.1f, Yat-CAShed: %.1f\n", avg_cfs_switches, avg_yat_switches);
 +    if (avg_cfs_switches > 0) {
 +        double switch_reduction = (avg_cfs_switches - avg_yat_switches) / avg_cfs_switches * 100;
 +        printf("  Reduction: %.1f%%\n", switch_reduction);
 +    }
-+    printf("Average Execution Time: CFS: %.3f s, Yat_Casched: %.3f s\n", avg_cfs_time, avg_yat_time);
++    printf("Average Execution Time: CFS: %.3f s, Yat-CAShed: %.3f s\n", avg_cfs_time, avg_yat_time);
 +    if (avg_cfs_time > 0) {
 +        double time_improvement = (avg_cfs_time - avg_yat_time) / avg_cfs_time * 100;
 +        printf("  Performance improvement: %.1f%%\n", time_improvement);
@@ -2857,16 +2857,16 @@ Upstream: linux v6.8 (torvalds)
 +def generate_performance_report(df, img_dir):
 +    """生成性能测试总结报告"""
 +    cfs_data = df[df['Scheduler'] == 'CFS']
-+    yat_data = df[df['Scheduler'] == 'Yat_Casched']
++    yat_data = df[df['Scheduler'] == 'Yat-CAShed']
 +    
 +    report = []
-+    report.append("# Yat_Casched Performance Test Results\n")
++    report.append("# Yat-CAShed Performance Test Results\n")
 +    report.append("## Test Configuration")
 +    report.append(f"- Number of threads: 8")
 +    report.append(f"- Test type: Cache-intensive workload")
 +    report.append(f"- Cache size: 2MB per thread")
 +    report.append(f"- Iterations: 10 per thread")
-+    report.append(f"- Schedulers compared: CFS vs Yat_Casched\n")
++    report.append(f"- Schedulers compared: CFS vs Yat-CAShed\n")
 +    
 +    if len(cfs_data) > 0 and len(yat_data) > 0:
 +        # CPU Switches
@@ -2875,7 +2875,7 @@ Upstream: linux v6.8 (torvalds)
 +        switch_reduction = (cfs_switches - yat_switches) / cfs_switches * 100 if cfs_switches > 0 else 0
 +        report.append(f"## CPU Switches Analysis\n")
 +        report.append(f"- CFS: {cfs_switches:.1f} (avg)")
-+        report.append(f"- Yat_Casched: {yat_switches:.1f} (avg)")
++        report.append(f"- Yat-CAShed: {yat_switches:.1f} (avg)")
 +        report.append(f"- **Reduction: {switch_reduction:.1f}%**\n")
 +        
 +        # Execution Time
@@ -2884,7 +2884,7 @@ Upstream: linux v6.8 (torvalds)
 +        time_improvement = (cfs_time - yat_time) / cfs_time * 100 if cfs_time > 0 else 0
 +        report.append(f"## Execution Time Analysis")
 +        report.append(f"- CFS: {cfs_time:.3f}s (avg)")
-+        report.append(f"- Yat_Casched: {yat_time:.3f}s (avg)")
++        report.append(f"- Yat-CAShed: {yat_time:.3f}s (avg)")
 +        report.append(f"- **Performance improvement: {time_improvement:.1f}%**\n")
 +        
 +        # CPU Affinity
@@ -2893,17 +2893,17 @@ Upstream: linux v6.8 (torvalds)
 +        affinity_improvement = (yat_affinity - cfs_affinity) / cfs_affinity * 100 if cfs_affinity > 0 else 0
 +        report.append(f"## CPU Affinity Analysis")
 +        report.append(f"- CFS: {cfs_affinity:.3f} (avg)")
-+        report.append(f"- Yat_Casched: {yat_affinity:.3f} (avg)")
++        report.append(f"- Yat-CAShed: {yat_affinity:.3f} (avg)")
 +        report.append(f"- **Improvement: {affinity_improvement:.1f}%**\n")
 +        
 +        # 结论
 +        report.append("## Conclusion")
 +        if switch_reduction > 0 and time_improvement > 0:
-+            report.append("Yat_Casched shows clear advantages in reducing CPU migrations and improving performance.")
++            report.append("Yat-CAShed shows clear advantages in reducing CPU migrations and improving performance.")
 +        elif switch_reduction > 0:
-+            report.append("Yat_Casched successfully reduces CPU migrations, demonstrating better cache affinity.")
++            report.append("Yat-CAShed successfully reduces CPU migrations, demonstrating better cache affinity.")
 +        else:
-+            report.append("Results show room for improvement in the Yat_Casched implementation.")
++            report.append("Results show room for improvement in the Yat-CAShed implementation.")
 +    
 +    # 保存报告
 +    report_path = os.path.join(img_dir, 'performance_summary.md')
@@ -2947,49 +2947,49 @@ Upstream: linux v6.8 (torvalds)
 @@ -0,0 +1,17 @@
 +Scheduler,Thread_ID,CPU_Switches,Execution_Time,CPU_Affinity_Score
 +CFS,0,16,1.155,0.387
-+Yat_Casched,0,0,1.144,1.000
++Yat-CAShed,0,0,1.144,1.000
 +CFS,1,7,1.160,0.484
-+Yat_Casched,1,1,1.160,0.715
++Yat-CAShed,1,1,1.160,0.715
 +CFS,2,8,1.175,0.463
-+Yat_Casched,2,3,1.146,0.421
++Yat-CAShed,2,3,1.146,0.421
 +CFS,3,22,1.158,0.540
-+Yat_Casched,3,5,1.160,0.514
++Yat-CAShed,3,5,1.160,0.514
 +CFS,4,22,1.164,0.593
-+Yat_Casched,4,2,1.154,0.735
++Yat-CAShed,4,2,1.154,0.735
 +CFS,5,21,1.163,0.390
-+Yat_Casched,5,0,1.153,1.000
++Yat-CAShed,5,0,1.153,1.000
 +CFS,6,27,1.175,0.458
-+Yat_Casched,6,3,1.148,0.940
++Yat-CAShed,6,3,1.148,0.940
 +CFS,7,5,1.138,0.865
-+Yat_Casched,7,4,1.143,0.626
++Yat-CAShed,7,4,1.143,0.626
 --- /dev/null
 +++ b/test_visualization/img/performance_summary.md
 @@ -0,0 +1,27 @@
-+# Yat_Casched Performance Test Results
++# Yat-CAShed Performance Test Results
 +
 +## Test Configuration
 +- Number of threads: 8
 +- Test type: Cache-intensive workload
 +- Cache size: 2MB per thread
 +- Iterations: 10 per thread
-+- Schedulers compared: CFS vs Yat_Casched
++- Schedulers compared: CFS vs Yat-CAShed
 +
 +## CPU Switches Analysis
 +
 +- CFS: 16.0 (avg)
-+- Yat_Casched: 2.2 (avg)
++- Yat-CAShed: 2.2 (avg)
 +- **Reduction: 85.9%**
 +
 +## Execution Time Analysis
 +- CFS: 1.161s (avg)
-+- Yat_Casched: 1.151s (avg)
++- Yat-CAShed: 1.151s (avg)
 +- **Performance improvement: 0.9%**
 +
 +## CPU Affinity Analysis
 +- CFS: 0.522 (avg)
-+- Yat_Casched: 0.744 (avg)
++- Yat-CAShed: 0.744 (avg)
 +- **Improvement: 42.4%**
 +
 +## Conclusion
-+Yat_Casched shows clear advantages in reducing CPU migrations and improving performance.
++Yat-CAShed shows clear advantages in reducing CPU migrations and improving performance.
 \ No newline at end of file

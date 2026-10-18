@@ -19,10 +19,10 @@ void test_scheduler_behavior() {
     printf("=== Scheduler Behavior Test ===\n");
     printf("Original scheduler: %d\n", original_policy);
     
-    // 尝试设置为Yat_Casched
-    printf("Attempting to set Yat_Casched scheduler...\n");
+    // 尝试设置为Yat-CAShed
+    printf("Attempting to set Yat-CAShed scheduler...\n");
     if (sched_setscheduler(0, SCHED_YAT_CASCHED, &param) == -1) {
-        printf("Failed to set Yat_Casched: %s\n", strerror(errno));
+        printf("Failed to set Yat-CAShed: %s\n", strerror(errno));
         return;
     }
     
@@ -30,7 +30,7 @@ void test_scheduler_behavior() {
     printf("Current scheduler: %d\n", current_policy);
     
     if (current_policy == SCHED_YAT_CASCHED) {
-        printf("Successfully using Yat_Casched!\n");
+        printf("Successfully using Yat-CAShed!\n");
         
         // 做一些简单的工作并观察行为
         printf("Starting simple workload...\n");
@@ -58,7 +58,7 @@ void test_scheduler_behavior() {
         sched_setscheduler(0, SCHED_OTHER, &param);
         printf("Restored to CFS scheduler\n");
     } else {
-        printf("Failed to activate Yat_Casched (policy=%d)\n", current_policy);
+        printf("Failed to activate Yat-CAShed (policy=%d)\n", current_policy);
     }
 }
 

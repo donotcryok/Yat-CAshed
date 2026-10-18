@@ -1,4 +1,4 @@
-# 内核补丁包（Yat-CASCHED）
+# 内核补丁包（Yat-CAShed）
 
 本目录把 `linux-6.8-main/` 中相对上游 **linux v6.8** 的全部改动固化为补丁，
 使 83k 文件 / 1.6GB 的内核整树**不必入库**。
@@ -13,7 +13,7 @@
 | `0003-x86-realmode-tolerate-missing-trampoline.patch` | `arch/x86/realmode/init.c`：trampoline 分配失败时降级而非 panic |
 | `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物（含 `test_with_programs_build/`、`yat_test_scripts/results/`） |
 | `0005-test-env.patch` | `boot_test_scripts/`（**只含 C 源码**：`yat_simple_test.c`、`yat_bench.c`）、`yat_test_scripts/`（**只含脚本**：含 `compare_cfs_vs_yat.sh`）、`test_visualization/`、三个 `initramfs/init` |
-| `0006-docs.patch` | `Yat_Casched开发文档.md`、`yat_casched优化记录.md` |
+| `0006-docs.patch` | `yat_casched优化记录.md`（实现文档已归档到仓库 `docs/archive/`，不随内核树分发） |
 
 > 二进制产物（`test_visualization/img/*.png`）与编译产物（`*.o`、`vmlinux`）
 > **不入补丁**，它们是可再生成的实验结果，保存在仓库

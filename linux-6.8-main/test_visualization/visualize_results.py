@@ -127,16 +127,16 @@ def plot_cpu_affinity_comparison(df, img_dir):
 def generate_performance_report(df, img_dir):
     """生成性能测试总结报告"""
     cfs_data = df[df['Scheduler'] == 'CFS']
-    yat_data = df[df['Scheduler'] == 'Yat_Casched']
+    yat_data = df[df['Scheduler'] == 'Yat-CAShed']
     
     report = []
-    report.append("# Yat_Casched Performance Test Results\n")
+    report.append("# Yat-CAShed Performance Test Results\n")
     report.append("## Test Configuration")
     report.append(f"- Number of threads: 8")
     report.append(f"- Test type: Cache-intensive workload")
     report.append(f"- Cache size: 2MB per thread")
     report.append(f"- Iterations: 10 per thread")
-    report.append(f"- Schedulers compared: CFS vs Yat_Casched\n")
+    report.append(f"- Schedulers compared: CFS vs Yat-CAShed\n")
     
     if len(cfs_data) > 0 and len(yat_data) > 0:
         # CPU Switches
@@ -145,7 +145,7 @@ def generate_performance_report(df, img_dir):
         switch_reduction = (cfs_switches - yat_switches) / cfs_switches * 100 if cfs_switches > 0 else 0
         report.append(f"## CPU Switches Analysis\n")
         report.append(f"- CFS: {cfs_switches:.1f} (avg)")
-        report.append(f"- Yat_Casched: {yat_switches:.1f} (avg)")
+        report.append(f"- Yat-CAShed: {yat_switches:.1f} (avg)")
         report.append(f"- **Reduction: {switch_reduction:.1f}%**\n")
         
         # Execution Time
@@ -154,7 +154,7 @@ def generate_performance_report(df, img_dir):
         time_improvement = (cfs_time - yat_time) / cfs_time * 100 if cfs_time > 0 else 0
         report.append(f"## Execution Time Analysis")
         report.append(f"- CFS: {cfs_time:.3f}s (avg)")
-        report.append(f"- Yat_Casched: {yat_time:.3f}s (avg)")
+        report.append(f"- Yat-CAShed: {yat_time:.3f}s (avg)")
         report.append(f"- **Performance improvement: {time_improvement:.1f}%**\n")
         
         # CPU Affinity
@@ -163,17 +163,17 @@ def generate_performance_report(df, img_dir):
         affinity_improvement = (yat_affinity - cfs_affinity) / cfs_affinity * 100 if cfs_affinity > 0 else 0
         report.append(f"## CPU Affinity Analysis")
         report.append(f"- CFS: {cfs_affinity:.3f} (avg)")
-        report.append(f"- Yat_Casched: {yat_affinity:.3f} (avg)")
+        report.append(f"- Yat-CAShed: {yat_affinity:.3f} (avg)")
         report.append(f"- **Improvement: {affinity_improvement:.1f}%**\n")
         
         # 结论
         report.append("## Conclusion")
         if switch_reduction > 0 and time_improvement > 0:
-            report.append("Yat_Casched shows clear advantages in reducing CPU migrations and improving performance.")
+            report.append("Yat-CAShed shows clear advantages in reducing CPU migrations and improving performance.")
         elif switch_reduction > 0:
-            report.append("Yat_Casched successfully reduces CPU migrations, demonstrating better cache affinity.")
+            report.append("Yat-CAShed successfully reduces CPU migrations, demonstrating better cache affinity.")
         else:
-            report.append("Results show room for improvement in the Yat_Casched implementation.")
+            report.append("Results show room for improvement in the Yat-CAShed implementation.")
     
     # 保存报告
     report_path = os.path.join(img_dir, 'performance_summary.md')

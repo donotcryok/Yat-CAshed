@@ -1,6 +1,6 @@
-# Yat_Casched 性能测试和可视化
+# Yat-CAShed 性能测试和可视化
 
-这是 Yat_Casched 缓存感知调度器的性能测试和结果可视化系统。
+这是 Yat-CAShed 缓存感知调度器的性能测试和结果可视化系统。
 
 ## 测试配置
 
@@ -59,9 +59,9 @@ sudo ./debug_scheduler
 
 ```
 === Average Performance over 10 runs ===
-Total CPU Switches: CFS: 92.2, Yat_Casched: 65.2
+Total CPU Switches: CFS: 92.2, Yat-CAShed: 65.2
   Reduction: 29.3%
-Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
+Average Execution Time: CFS: 1.255 s, Yat-CAShed: 1.228 s
   Performance improvement: 2.2%
 ```
 
@@ -73,15 +73,15 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 ![CPU Switches Comparison](img/cpu_switches_comparison.png)
 
 **分析要点：**
-- Yat_Casched 显著减少了CPU切换次数（减少约29.3%）
+- Yat-CAShed 显著减少了CPU切换次数（减少约29.3%）
 - 更少的切换次数表明缓存感知调度策略有效维持了任务的CPU亲和性
-- 这直接体现了Yat_Casched减少缓存失效的设计目标
+- 这直接体现了Yat-CAShed减少缓存失效的设计目标
 
 ### 执行时间对比
 ![Execution Time Comparison](img/execution_time_comparison.png)
 
 **分析要点：**
-- Yat_Casched 在执行时间上略优于CFS（提升约2.2%）
+- Yat-CAShed 在执行时间上略优于CFS（提升约2.2%）
 - 性能提升主要来源于减少的CPU迁移和更好的缓存命中率
 - 在缓存密集型工作负载下，缓存亲和性的价值得到了体现
 
@@ -90,13 +90,13 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 **分析要点：**
 - 亲和性分数越接近1.0表示线程更倾向于在固定CPU上运行
-- Yat_Casched 通常展现出更高的亲和性分数
+- Yat-CAShed 通常展现出更高的亲和性分数
 - 高亲和性意味着更好的缓存局部性和数据访问效率
 
 ### 综合评估
 
 从三个维度的对比可以看出：
-1. **缓存亲和性优势明显**：Yat_Casched成功减少了不必要的CPU迁移
+1. **缓存亲和性优势明显**：Yat-CAShed成功减少了不必要的CPU迁移
 2. **性能提升稳定**：在中等压力测试下表现出一致的性能优势  
 3. **调度策略有效**：缓存感知机制在实际工作负载中发挥了预期作用
 
@@ -106,7 +106,7 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 ### CPU切换次数（越少越好）
 - 反映调度器的缓存亲和性策略效果
-- Yat_Casched应该显示更少的CPU切换次数
+- Yat-CAShed应该显示更少的CPU切换次数
 
 ### 执行时间（越短越好）  
 - 整体性能指标
@@ -118,7 +118,7 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 ## 系统要求
 
-- Linux 内核 6.8+ （包含 Yat_Casched 调度器）
+- Linux 内核 6.8+ （包含 Yat-CAShed 调度器）
 - GCC 编译器
 - Python 3.6+ 
 - 必需的Python库：pandas, matplotlib, seaborn, numpy
@@ -152,7 +152,7 @@ Average Execution Time: CFS: 1.255 s, Yat_Casched: 1.228 s
 
 ## 开发说明
 
-这是 Yat_Casched 项目的**初赛版本**，主要目的是验证缓存感知调度的基本可行性。测试配置经过优化，能够在中等压力下清晰展现调度器的性能差异。
+这是 Yat-CAShed 项目的**初赛版本**，主要目的是验证缓存感知调度的基本可行性。测试配置经过优化，能够在中等压力下清晰展现调度器的性能差异。
 
 ## 一键命令参考
 

@@ -49,10 +49,9 @@ Yat-CAShed/
 ├── docs/                        # 工程化文档体系（入口见 docs/README.md）
 ├── scripts/                     # 仓库运维脚本（check_repo / check_symbols / check_docs / normalize_eol）
 ├── .github/workflows/ci.yml     # CI（仓库检查 + 文档链接 + 符号一致性 + 模拟器回放）
-├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat_Casched 调度器
+├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat-CAShed 调度类
 │   ├── kernel/sched/yat_casched.c          # 调度器核心实现（AJLR，冲突已解决）
 │   ├── include/linux/sched/yat_casched.h   # 调度器头文件
-│   ├── Yat_Casched开发文档.md               # 完整实现文档（初赛版）
 │   ├── yat_casched优化记录.md               # 迭代优化记录
 │   ├── boot_test_scripts/                   # 用户态测试程序
 │   ├── yat_test_scripts/                    # QEMU 测试环境脚本
@@ -73,7 +72,7 @@ Yat-CAShed/
 
 ### 1. 内核调度器（[`linux-6.8-main/`](linux-6.8-main)）
 
-在 Linux 6.8 内核上新增 `Yat_Casched` 调度类，主要改动点：
+在 Linux 6.8 内核上新增 `SCHED_YAT_CASCHED`（策略号 8）调度类，主要改动点：
 
 | 文件 | 改动 |
 |------|------|
@@ -87,7 +86,8 @@ Yat-CAShed/
 | `include/linux/sched.h` | `task_struct` 增加 `yat_casched` 实体 |
 | `include/asm-generic/vmlinux.lds.h` | 链接器段注册 |
 
-> 详细设计与实现说明见 [`Yat_Casched开发文档.md`](linux-6.8-main/Yat_Casched开发文档.md)，迭代记录见 [`yat_casched优化记录.md`](linux-6.8-main/yat_casched优化记录.md)。
+> 架构与集成点说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，迭代记录见 [`yat_casched优化记录.md`](linux-6.8-main/yat_casched优化记录.md)，
+> 初赛版/决赛版的**历史**实现文档已归档到 [`docs/archive/`](docs/archive)。
 
 ### 2. 调度模拟器（[`simulator/`](simulator)）
 
@@ -151,9 +151,9 @@ make -C simulator picture   # 单独生成可视化图表（需 Python + matplot
 ### 3. 论文与资料（[`report/`](report)）
 
 - [`report/paper/`](report/paper)：毕业论文 LaTeX 源码（`Yat-CAShed.tex` 等章节文件）
-- [`report/paper/Yat_Casched_完整实现文档.md`](report/paper/Yat_Casched_完整实现文档.md)：完整实现文档
 - 参考论文：AJLR（RTNS'23）、Cache-Aware Allocation of Parallel Jobs on Multi-cores
 - [`report/prompt_md/`](report/prompt_md)：分析与计划笔记
+- 初赛版/决赛版**历史**实现文档：[`docs/archive/`](docs/archive)（不再是事实来源）
 
 ## 构建与测试（内核部分）
 
@@ -162,7 +162,7 @@ make -C simulator picture   # 单独生成可视化图表（需 Python + matplot
 ```bash
 cd linux-6.8-main
 
-# 启用 Yat_Casched 调度类
+# 启用 Yat-CAShed 调度类
 scripts/config --enable CONFIG_SCHED_CLASS_YAT_CASCHED
 
 # 编译内核
@@ -207,4 +207,10 @@ make report      # 优先 latexmk -xelatex，产物 report/paper/Yat-CAShed.pdf
 
 ## 许可证
 
-内核部分遵循 Linux 内核的 GPL-2.0 许可证（见 [`linux-6.8-main/COPYING`](linux-6.8-main/COPYING)）；模拟器与文档的学术使用权以各参考论文与项目说明为准。
+分模块授权，详见 [`LICENSE`](LICENSE)：
+
+- **内核部分**（`linux-6.8-main/` 中新增/修改的调度器文件）：GPL-2.0，与 Linux 内核一致（见 [`linux-6.8-main/COPYING`](linux-6.8-main/COPYING)）。
+- **模拟器**（`simulator/` 自有 Java 源码）：学术研究与教学使用，保留所有权利。
+  第三方依赖 `simulator/lib/commons-math3-3.6.1.jar` 归其作者所有（Apache-2.0）。
+- **文档与论文**（`docs/`、`report/` 中本项目撰写部分）：学术研究与教学使用，转载请注明出处。
+  `report/` 内引用的第三方论文 PDF 版权归原作者，仅作学习研究。

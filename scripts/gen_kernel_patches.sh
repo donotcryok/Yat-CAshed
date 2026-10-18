@@ -69,7 +69,6 @@ NEW_FILES=(
   test_visualization/visualize_results.py
   test_visualization/performance_results.csv
   test_visualization/img/performance_summary.md
-  Yat_Casched开发文档.md
   yat_casched优化记录.md
 )
 
@@ -192,9 +191,10 @@ make_patch 0005-test-env.patch \
   N:test_visualization/performance_results.csv \
   N:test_visualization/img/performance_summary.md
 
+# 注意：初赛版/决赛版实现文档已归档到仓库 docs/archive/（不随内核树分发），
+# 因此这里只打 `yat_casched优化记录.md`（内核树内的迭代记录）。
 make_patch 0006-docs.patch \
-  "docs: add Yat_Casched design and optimization notes" \
-  N:Yat_Casched开发文档.md \
+  "docs: add Yat-CAShed optimization notes" \
   N:yat_casched优化记录.md
 
 # series（按序）
@@ -205,7 +205,7 @@ ls "$OUT"/0*.patch | xargs -n1 basename | sort > "${OUT}/series"
 
 # README
 cat > "${OUT}/README.md" <<'EOF'
-# 内核补丁包（Yat-CASCHED）
+# 内核补丁包（Yat-CAShed）
 
 本目录把 `linux-6.8-main/` 中相对上游 **linux v6.8** 的全部改动固化为补丁，
 使 83k 文件 / 1.6GB 的内核整树**不必入库**。
@@ -220,7 +220,7 @@ cat > "${OUT}/README.md" <<'EOF'
 | `0003-x86-realmode-tolerate-missing-trampoline.patch` | `arch/x86/realmode/init.c`：trampoline 分配失败时降级而非 panic |
 | `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物（含 `test_with_programs_build/`、`yat_test_scripts/results/`） |
 | `0005-test-env.patch` | `boot_test_scripts/`（**只含 C 源码**：`yat_simple_test.c`、`yat_bench.c`）、`yat_test_scripts/`（**只含脚本**：含 `compare_cfs_vs_yat.sh`）、`test_visualization/`、三个 `initramfs/init` |
-| `0006-docs.patch` | `Yat_Casched开发文档.md`、`yat_casched优化记录.md` |
+| `0006-docs.patch` | `yat_casched优化记录.md`（实现文档已归档到仓库 `docs/archive/`，不随内核树分发） |
 
 > 二进制产物（`test_visualization/img/*.png`）与编译产物（`*.o`、`vmlinux`）
 > **不入补丁**，它们是可再生成的实验结果，保存在仓库

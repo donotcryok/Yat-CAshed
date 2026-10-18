@@ -1,6 +1,6 @@
 #!/bin/busybox sh
 
-echo "=== Yat_Casched 测试环境启动 ==="
+echo "=== Yat-CAShed 测试环境启动 ==="
 echo "Linux 内核启动完成，正在初始化测试环境..."
 
 # 挂载基本文件系统
@@ -25,7 +25,7 @@ for cmd in sh ls cat echo ps mount umount grep; do
 done
 
 echo ""
-echo "=== Yat_Casched 调度器测试 ==="
+echo "=== Yat-CAShed 调度器测试 ==="
 echo "系统信息："
 echo "  内核版本: $(cat /proc/version | cut -d' ' -f1-3)"
 echo "  CPU 数量: $(cat /proc/cpuinfo | grep processor | wc -l)"
@@ -34,10 +34,10 @@ echo ""
 # 显示调度器信息
 echo "=== 调度器信息 ==="
 if [ -f /proc/sched_debug ]; then
-    echo "检查 Yat_Casched 调度器..."
+    echo "检查 Yat-CAShed 调度器..."
     if grep -q "yat_casched" /proc/sched_debug 2>/dev/null; then
-        echo "✓ 发现 Yat_Casched 调度器！"
-        echo "Yat_Casched 相关信息："
+        echo "✓ 发现 Yat-CAShed 调度器！"
+        echo "Yat-CAShed 相关信息："
         grep -i yat /proc/sched_debug | head -5
     else
         echo "! 在 /proc/sched_debug 中未找到 yat_casched"

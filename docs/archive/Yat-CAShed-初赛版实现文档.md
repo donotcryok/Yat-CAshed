@@ -1,4 +1,17 @@
-# Yat_Casched 缓存感知调度器完整实现文档
+# Yat_Casched开发文档
+
+> **⚠️ 归档文档（历史版本，非当前事实来源）。**
+>
+> 本文档描述的是**初赛版**实现（原位置 `linux-6.8-main/Yat_Casched开发文档.md`）。
+> 当前离线代码主线为**决赛 AJLR 版**，实际行为请以
+> [`yat_casched.c`](../../linux-6.8-main/kernel/sched/yat_casched.c)、
+> [`yat_casched.h`](../../linux-6.8-main/include/linux/sched/yat_casched.h) 与
+> [`ARCHITECTURE.md`](../ARCHITECTURE.md) 为准。
+>
+> 归档说明见 [`README.md`](README.md)。正文保留原样，未跟随后续修改；
+> 正文中的相对链接仍以**归档前目录**为基准，由 `scripts/check_docs.py` 按原基准校验。
+
+<!-- /archive-banner -->
 
 ## 目录
 1. 项目概述与设计理念

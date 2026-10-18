@@ -1,6 +1,6 @@
 # 贡献指南（Contributing Guide）
 
-感谢参与 Yat-Casched。本文件约定分支模型、提交规范与检查流程。
+感谢参与 Yat-CAShed。本文件约定分支模型、提交规范与检查流程。
 
 ## 1. 分支模型
 
@@ -92,6 +92,23 @@ make verify-all   # check + docs-check + symbol-check + simulator-verify
 
 ## 6. 命名约定
 
-- 项目名统一：**Yat-Casched**（显示层可用 `Yat-CAShed`）。
-- 代码标识符统一：`yat_casched`（小写下划线）。
-- 避免在同一文档中混用 `Yat_Casched` / `Yat_CASched` / `YAT_CASCHED`。
+规范名：**`Yat-CAShed`**。这一选择不是按出现频率投票，而是按**外部不可变标识**定的——
+git remote（`github.com/donotcryok/Yat-CAShed`）、CI badge、论文标题、
+`report/paper/Yat-CAShed.tex` 等一旦改名就会破坏外部链接或构建，因此它们反过来锚定了项目名。
+
+规则分三层，各自独立：
+
+1. **项目名（散文/标题/注释）** → `Yat-CAShed`
+   - ✅ `Yat-CAShed 调度类`、`Yat-CAShed 项目`
+   - ❌ 其余大小写/分隔符组合（下划线、全大写、`Casched` 等）均不合规 <!-- name-check:ignore -->
+2. **内核代码标识符** → `yat_casched`（小写下划线）/ `YAT_CASCHED`（宏、策略名）
+   - 由 `CONFIG_SCHED_CLASS_YAT_CASCHED`、`DEFINE_SCHED_CLASS(yat_casched)`、
+     `SCHED_YAT_CASCHED` 决定，**不跟随显示名**，不要为了"统一"去改它们。
+3. **不可变外部标识** → 保持原样
+   - GitHub 仓库路径、CI badge URL、论文标题、既有文件名（`report/paper/Yat-CAShed.tex` 等）。
+
+机械检查：`make name-check`（[`scripts/check_names.py`](scripts/check_names.py)）。
+它扫描全部 `git ls-files` 文本文件，对散文层残留输出 `文件:行: 违规写法 -> 上下文`，
+并豁免 `docs/archive/`（历史快照）、`report/`（论文交付物）、`patches/`（生成物）与二进制。
+
+> 注意：`docs/archive/` 下的归档文档**故意保留**历史拼写，它们不是事实来源，不要"修正"。

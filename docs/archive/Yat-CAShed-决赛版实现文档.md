@@ -1,4 +1,18 @@
-# Yat_Casched 缓存感知调度器完整实现文档
+# Yat_Casched_完整实现文档
+
+> **⚠️ 归档文档（历史版本，非当前事实来源）。**
+>
+> 本文档描述的是**决赛 AJLR 版**的实现（原位置 `report/paper/Yat_Casched_完整实现文档.md`），
+> 与当前主线思路一致，但正文是当时的快照：后续 A5 轮次已删除未被使用的
+> `per_cpu_last_ts[NR_CPUS]` 与 `rq->yat_casched.history_tables`，并为锁加了
+> `_irqsave` 变体，**这些变化未回填到本文档**。
+> 实际行为请以 [`yat_casched.c`](../../linux-6.8-main/kernel/sched/yat_casched.c) 与
+> [`ARCHITECTURE.md`](../ARCHITECTURE.md) 为准。
+>
+> 归档说明见 [`README.md`](README.md)。正文保留原样；
+> 正文中的相对链接仍以**归档前目录**为基准，由 `scripts/check_docs.py` 按原基准校验。
+
+<!-- /archive-banner -->
 
 ## 目录
 1. [项目概述与设计理念](#项目概述与设计理念)

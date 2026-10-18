@@ -14,6 +14,7 @@
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发环境、构建与测试指南 |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | `simulator/lib/` 依赖审计报告（使用/未使用清单 + 建议） |
 | [EXPERIMENT_REPORT.md](EXPERIMENT_REPORT.md) | 模拟器实验报告（WFD vs CacheAware_v2：设计、统计、图表、局限、复现） |
+| [SCHEMA.md](SCHEMA.md) | 数据与产物格式约定：CSV 列定义 / schema 版本 / 图表命名 / 变更规则 |
 | [DIRECTORY.md](DIRECTORY.md) | 目录结构与文件职责说明 |
 | [archive/README.md](archive/README.md) | 归档目录说明与政策 |
 
@@ -32,7 +33,6 @@
 
 ### 内核调度器（`linux-6.8-main/`）
 
-- [`Yat_Casched开发文档.md`](../linux-6.8-main/Yat_Casched开发文档.md) — 初赛版完整实现文档
 - [`yat_casched优化记录.md`](../linux-6.8-main/yat_casched优化记录.md) — 迭代优化记录（变更日志）
 - [`boot_test_scripts/README.md`](../linux-6.8-main/boot_test_scripts/README.md) — 用户态测试程序说明
 - [`yat_test_scripts/README.md`](../linux-6.8-main/yat_test_scripts/README.md) — QEMU 测试环境脚本说明
@@ -45,18 +45,31 @@
 ### 论文与资料（`report/`）
 
 - [`paper/`](../report/paper/) — 毕业论文 LaTeX 源码
-- [`paper/Yat_Casched_完整实现文档.md`](../report/paper/Yat_Casched_完整实现文档.md) — 决赛版完整实现文档
 - [`prompt_md/ajlr_paper_analysis.md`](../report/prompt_md/ajlr_paper_analysis.md) — AJLR 论文核心思想解析
 - [`prompt_md/plan.md`](../report/prompt_md/plan.md) — 决赛版最小化实现方案
 
+### 归档（`docs/archive/`）
+
+- [`archive/README.md`](archive/README.md) — 归档政策与已归档清单
+- [`archive/Yat-CAShed-初赛版实现文档.md`](archive/Yat-CAShed-初赛版实现文档.md) — 初赛版实现（历史）
+- [`archive/Yat-CAShed-决赛版实现文档.md`](archive/Yat-CAShed-决赛版实现文档.md) — 决赛 AJLR 版实现（历史）
+
 ## 文档维护约定
 
-1. **事实来源唯一**：`linux-6.8-main/Yat_Casched开发文档.md` 记录的是**初赛版**实现，
-   `report/paper/Yat_Casched_完整实现文档.md` 记录的是**决赛 AJLR 版**实现。
-   当前代码主线为决赛版（见 [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7），
-   涉及行为判断时**以代码与 [`ARCHITECTURE.md`](ARCHITECTURE.md) 为准**。
-2. **命名**：仓库名/展示层用 `Yat-CAShed`；代码标识符统一 `yat_casched`。
-   历史文档中的其他写法不做批量重写，以免破坏外部引用。
+1. **事实来源唯一**：调度类的**实际行为**以 `linux-6.8-main/kernel/sched/yat_casched.c`
+   与 `include/linux/sched/yat_casched.h` 为准；架构层面见 [`ARCHITECTURE.md`](ARCHITECTURE.md)；
+   变更历史见 [`../CHANGELOG.md`](../CHANGELOG.md)。两份「完整实现文档」是**历史快照**，
+   已归档到 [`archive/`](archive/README.md)，不再作为事实来源（对应
+   [CONFLICT_ANALYSIS.md](CONFLICT_ANALYSIS.md) §7 的版本关系结论）。
+2. **命名**（机械可判定，见 [`../CONTRIBUTING.md`](../CONTRIBUTING.md) §6）：
+   - **项目名**：统一 `Yat-CAShed`。唯一例外是与外部实体绑定的不可变标识——
+     GitHub 仓库路径（`github.com/donotcryok/Yat-CAShed`）、论文标题、`report/paper/Yat-CAShed.tex`
+     等既有文件名，这些改动会破坏外部链接或构建，故保持原样。
+   - **调度类名（散文）**：写作 `Yat-CAShed 调度类`，或直接引用注册名 `SCHED_YAT_CASCHED`。
+   - **代码标识符**：一律 `yat_casched`（小写下划线）与 `YAT_CASCHED`（宏/策略名），
+     由内核既有命名习惯决定，不随项目名调整。
+   - `make name-check` 会对**散文层残留**做回归：白名单之外只要出现上表中的
+     任一变体写法即失败，详见 [`scripts/check_names.py`](../scripts/check_names.py)。
 3. **新增文档**：优先放入 `docs/`，并在本索引登记；模块专属文档留在模块目录。
 4. **链接门禁**：`make docs-check` 会校验本索引及全仓库 Markdown 的相对链接，
    CI 已接入；新增/移动文档后请本地先跑一次。

@@ -7,7 +7,7 @@
 
 ```
 Yat-CAShed/
-├── linux-6.8-main/     # Linux 6.8 内核源码 + Yat_Casched 调度类（约 1.6G，含完整内核树）
+├── linux-6.8-main/     # Linux 6.8 内核源码 + Yat-CAShed 调度类（约 1.6G，含完整内核树）
 ├── simulator/          # Java 缓存感知调度算法模拟器（约 78M，绝大部分为 lib/*.jar）
 ├── report/             # 论文 LaTeX、参考 PDF、分析笔记（约 43M）
 ├── docs/               # ★ 新增：统一文档中心
@@ -148,7 +148,7 @@ Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.ba
 | P2 | 历史遗留的 `yat_global_pool_*` 声明已从接口中移除 | `yat_casched.h` | ✅ 已清理 |
 | P3 | `sched.h` 重复 `#include <linux/sched/yat_casched.h>` | `sched.h:23` 与 `:76` | ✅ 修复 |
 | P4 | 空源文件 | `boot_test_scripts/yat_scheduler_test.c`、`test_simple_history_validation.c`、`report/paper/Yat-CAShed_new.tex` | ✅ 清理 |
-| P5 | 实现文档重复分叉 | 内核目录 vs `report/paper` | 记录 + 索引 |
+| P5 | 实现文档重复分叉 | 内核目录 vs `report/paper` | ✅ 已归档收敛到 [`docs/archive/`](archive/README.md) |
 | P6 | 模拟器构建脚本仅支持 Windows | `simulator/Makefile` | ✅ 已改写为跨平台 GNU Make |
 | P7 | 缺少 LICENSE / CONTRIBUTING / CI / .editorconfig | 仓库根 | ✅ 新增 |
 | P8 | 调度类顺序依赖 `vmlinux.lds.h` 手工插段，脆弱 | `vmlinux.lds.h:135` | ✅ 已加 `#ifdef` 条件编译，未启用时不插入空段 |
@@ -162,6 +162,11 @@ Linux / macOS / WSL / Git-Bash 均可直接使用；Windows 亦可用 [`build.ba
 | 问题 | 说明 |
 |------|------|
 | **AJLR 就绪池未接入主调度路径** | `yat_ajlr_enqueue_task()` 只把 `yat_job` 绑定到 `task_struct`，**不插入 `global_ready_pool`**；`pick_next_task_yat_casched()` 从 `rq->yat_casched.tasks` 选任务。就绪池目前只被 `yat_create_test_dag()` 演示路径使用。因此 `jobs_placed` / `history_records` / `accel_inserts` 常为 0。这是**架构现状，不是 bug**；要验证 AJLR 算法效果需改动调度路径（属方向 D，不在 P2 质量工程范围）。 |
-| **两份「完整实现文档」分叉** | `linux-6.8-main/Yat_Casched开发文档.md` 与 `report/paper/Yat_Casched_完整实现文档.md` 内容高度重合。属 P1 文档治理范畴，待归档收敛到 `docs/archive/`。 |
-| **项目名三种写法并存** | `Yat-CAShed` / `Yat_CAShed` / `Yat_Casched` 在代码、文档、脚本中混用。属 P1 文档治理范畴。 |
-| **LICENSE 对模拟器/文档未明确** | 内核部分 GPL-2.0 清晰；模拟器与文档目前只写「以参考论文为准」，法律上不清晰。属 P1 范畴。 |
+
+### 5.2 已收敛的 P1 文档治理项（本轮关闭）
+
+| 问题 | 处理结果 |
+|------|----------|
+| 两份「完整实现文档」分叉 | ✅ 已 `git mv` 到 [`docs/archive/`](archive/README.md)，加归档 banner，正文不改以保留历史真实性。当前事实来源是 `yat_casched.c` / `yat_casched.h` / 本文件 / `CHANGELOG.md`。 |
+| 项目名多种写法并存 | ✅ 规范名定为 **`Yat-CAShed`**（依据：与 git remote、CI badge、论文标题、既有 `report/paper/Yat-CAShed.tex` 等外部不可变标识绑定）。补齐机械门禁 [`scripts/check_names.py`](../scripts/check_names.py)（`make name-check`），散文层残留可回归。内核代码标识符（`yat_casched`、`SCHED_YAT_CASCHED`）是独立命名空间，**不跟显示名**。 |
+| LICENSE 对模拟器/文档未明确 | ✅ 见 [`LICENSE`](../LICENSE)：内核新增/修改文件 GPL-2.0；模拟器与本项目自有文档明确为「学术研究与教学使用，保留所有权利」，与第三方素材区分开。 |
