@@ -27,6 +27,16 @@ jobs:
         run: bash scripts/check_symbols.sh
         continue-on-error: false
 
+      - name: 项目名拼写一致性检查
+        run: python3 scripts/check_names.py
+        continue-on-error: false
+
+      # 内核整树不入库，靠 patches/ 复原；补丁与被管理的源码一旦分叉，
+      # 别人 clone 下来就无法重建同一份内核。这里做 SHA256 + hunk 数校验。
+      - name: 内核补丁包完整性校验
+        run: bash scripts/kernel-patch.sh --check
+        continue-on-error: false
+
       - name: 冲突标记守卫（独立复核）
         run: |
           echo "扫描合并冲突标记（排除完整内核树内的工具目录）..."
