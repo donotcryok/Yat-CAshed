@@ -3,6 +3,83 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — P1 文档治理收尾 + P2 B3（模拟器参数外置 / CSV schema）
+
+本轮把 P1「文档治理」的最后三块（项目名统一、实现文档归档、LICENSE 授权澄清）
+与 P2 B3 的尾巴（参数外置、CSV schema 与图表命名文档）一次收口。
+**内核代码逻辑零改动**——内核目录下的变化仅为注释/字符串里的项目名替换，
+已由 `make kernel-obj` + `make patch-selftest` 双向验证。
+
+### 新增（Added）
+
+- **参数外置（B3 前半）**：模拟器的实验参数不再硬编码在 Java 里，改为
+  `内置默认 < config/*.yaml < 命令行` 三级优先级。
+  - [`simulator/parameters/YamlSubset.java`](simulator/parameters/YamlSubset.java)
+    —— **零依赖** YAML 子集解析器（约 430 行）。B2 的依赖治理把 `simulator/lib/`
+    收敛到单个 JAR，因此不引入 SnakeYAML；改为实现一个**刻意收窄**的子集，
+    遇到子集之外的语法（Tab 缩进、行内映射 `{}`、多行标量、锚点/别名、tag）
+    一律**报错而不是猜**。所有错误带 `文件:行号`。
+  - [`simulator/parameters/ExperimentConfig.java`](simulator/parameters/ExperimentConfig.java)
+    —— schema v1（`experiment:` / `system:` 两段，**两段均可选**，段内键严格）。
+    刻意拒绝未知键（拼错 `utilisation_levels` 会让实验以旧参数跑完并产出
+    一份「看起来正常但标注错误」的 CSV，比直接崩溃危险得多），
+    也刻意**不做越界值自动截断**（`high_cache_sensitivity_ratio: 1.5` 直接报错）。
+  - [`simulator/config/default.yaml`](simulator/config/default.yaml)
+    —— 数值与 B3 之前的硬编码**逐字节相等**，保证无配置文件时行为完全不变。
+  - [`simulator/config/README.md`](simulator/config/README.md)
+    —— 加载顺序、字段约束表、「不要就地改 default.yaml，要建 profile」政策。
+  - `AlgorithmComparisonExperiment` 新增 `--config=<path>` / `--print-config`；
+    `parseArgs` 改为**两趟扫描**，使 `--cores=4 --config=a.yaml` 与
+    `--config=a.yaml --cores=4` 行为一致（隐性的 flag 顺序依赖是极难排查的 bug 类）。
+- **CSV schema 与图表命名（B3 后半）**：
+  - [`docs/SCHEMA.md`](docs/SCHEMA.md) —— 模拟器 9 列 CSV 与内核 5 列 CSV 的
+    列定义/精度/语义、两侧图表文件命名、变更规则（何时 bump schema 版本）。
+  - `ResultVisualizer` 把 CSV 表头提为 `CSV_COLUMNS` 契约常量，
+    并新增**类加载期自检**：列数与 `CSV_FORMAT` 占位符数不一致即
+    `IllegalStateException`，绝不静默产出错位 CSV。
+  - 新增元数据旁文件 `<csv>.meta.json`（`csv_schema_version` / `columns` /
+    `algorithms` / `data_rows`）。**不写进 CSV 注释行**的理由：CSV 无标准注释
+    语法，`pandas.read_csv` 会把 `#` 行当数据。旁文件也**刻意不含实验参数**，
+    那些属于 `config/*.yaml`，重复记录会形成两个会漂移的事实来源。
+- `simulator/tests/YatSimulatorTest.java` 新增 `[7] 配置外置` 段（27 条断言），
+  覆盖标量类型识别、行内/块状列表等价、Tab 与行内映射拒绝、11 个默认值
+  （含数组顺序）、未知键/版本不匹配/越界/长度错误四类负向、CLI 覆盖优先级，
+  以及 `applyToSystemParameters` 的**数组拷贝**语义。断言总数 75 → 102。
+
+### 变更（Changed）
+
+- **项目名统一（P1）**：散文层统一为 `Yat-CAShed`；代码标识符保持
+  `yat_casched` / `YAT_CASCHED`（内核命名习惯），注册名 `SCHED_YAT_CASCHED` 不变。
+  新增 [`scripts/check_names.py`](scripts/check_names.py) 与 `make name-check`，
+  机械回归散文层残留（白名单之外出现变体写法即失败）。
+- **实现文档归档（P1）**：两份「完整实现文档」用 `git mv` 收敛到
+  [`docs/archive/`](docs/archive/README.md)，正文加历史快照 banner、
+  不再作为事实来源；全仓相对链接同步修正。
+- **LICENSE 授权澄清（P1）**：改为三段式 —— 内核部分 GPL-2.0（与上游一致，
+  调度类文件带 SPDX 标识）、模拟器与文档明确「保留所有权利 + 有限学术许可」，
+  不再只写「以参考论文为准」这种法律上无法执行的表述。
+- **补丁包重生成（A1 回归）**：内核文件的项目名替换改变了
+  `0001` / `0002` / `0005` / `0006` 的内容，`patches/` 已重新生成
+  （6 个补丁 / 244 KB），`MANIFEST.sha256` 同步刷新。
+
+### 验证（Verified）
+
+- `make verify-all`（check + docs-check + name-check + symbol-check +
+  patch-check + simulator-verify）全绿：
+  - 27 个 Markdown 文件、321 条相对链接，失效 0；
+  - 75 个文件项目名散文层零残留；
+  - 符号一致性：头文件声明 28 / 源码定义 26 + 25 static，无缺失、无泄漏、无不一致；
+  - `make test`：**102 条断言全通过**（原 75 + 新增 27）。
+- `make patch-selftest --upstream <干净 v6.8 树>`：
+  正向应用后与仓库**逐字节一致**，反向回退后与上游**逐字节一致** ✅。
+- `make kernel-obj`：`CC kernel/sched/yat_casched.o` 通过。
+- 配置外置的负向路径逐条实测（均给出可读中文消息、非堆栈）：
+  未知键回显键名与可用键列表 / Tab 缩进带 `:3:` 行号 / 缺 `schema_version` /
+  `schema_version: 99` / `high_cache_sensitivity_ratio: 1.5`（`必须在 [0,1]`）/
+  `--config` 指向不存在的文件。
+- CSV 契约：表头仍为原始 9 列（`visualize.py` 按名读取，不受影响）；
+  旁文件 `data_rows: 10`、`algorithms: ["CacheAware_v2","WFD"]`。
+
 ## [Unreleased] — P2 内核质量：A4 → A5 → A6 → A7
 
 本轮聚焦**真实内核**的工程质量（模拟器只做必要维护）。核心成果是：
