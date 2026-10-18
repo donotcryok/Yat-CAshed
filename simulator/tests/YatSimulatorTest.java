@@ -6,12 +6,15 @@ import entity.SharedCacheModel;
 import allocation.WFD;
 import allocation.CacheAware_v2;
 import analyzer.PerformanceAnalyzer;
+import parameters.ExperimentConfig;
 import parameters.SystemParameters;
+import parameters.YamlSubset;
 import org.apache.commons.math3.util.Pair;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 /**
@@ -440,6 +443,199 @@ public class YatSimulatorTest {
         CacheAware_v2.resetState();
     }
 
+    // ---------- [7] 配置外置（B3）：YAML 子集 + ExperimentConfig ----------
+    private static void testConfig() {
+        section("7. 配置外置（YAML 子集 + ExperimentConfig）");
+
+        // A) 标量类型识别：整数不能被误判成浮点（否则 Long→Double 会让种子变精度）
+        Map<String, Object> scalars = YamlSubset.parse(Arrays.asList(
+                "i: 42",
+                "d: 0.5",
+                "b: true",
+                "n: null",
+                "q: \"a # b\"",
+                "neg: -3"
+        ), "<inline>");
+        checkEq("整数解析为 Long", Long.valueOf(42), scalars.get("i"));
+        checkEq("浮点解析为 Double", Double.valueOf(0.5), scalars.get("d"));
+        checkEq("布尔解析为 Boolean", Boolean.TRUE, scalars.get("b"));
+        check("null 解析为 null", scalars.containsKey("n") && scalars.get("n") == null);
+        checkEq("引号内的 # 不是注释", "a # b", scalars.get("q"));
+        checkEq("负数整数", Long.valueOf(-3), scalars.get("neg"));
+
+        // B) 行内列表与缩进列表等价
+        Map<String, Object> inline = YamlSubset.parse(Arrays.asList(
+                "l: [0.6, 1.0, 1.5]"
+        ), "<inline>");
+        Map<String, Object> block = YamlSubset.parse(Arrays.asList(
+                "l:",
+                "  - 0.6",
+                "  - 1.0",
+                "  - 1.5"
+        ), "<block>");
+        checkEq("行内列表长度", 3, ((List<?>) inline.get("l")).size());
+        checkEq("缩进列表与行内列表一致", inline.get("l"), block.get("l"));
+
+        // C) 空行内列表
+        Map<String, Object> emptyList = YamlSubset.parse(
+                Arrays.asList("l: []"), "<empty>");
+        checkEq("空行内列表长度为 0", 0, ((List<?>) emptyList.get("l")).size());
+
+        // D) Tab 缩进必须被拒绝（YAML 禁止，且最易造成层级错乱）
+        boolean tabRejected = false;
+        try {
+            YamlSubset.parse(Arrays.asList("a:", "\tb: 1"), "<tab>");
+        } catch (YamlSubset.YamlException e) {
+            tabRejected = e.getMessage().contains("制表符");
+        }
+        check("Tab 缩进被拒绝且消息可读", tabRejected);
+
+        // E) 行内映射不支持 → 报错而不是猜
+        boolean mapRejected = false;
+        try {
+            YamlSubset.parse(Arrays.asList("a: {b: 1}"), "<map>");
+        } catch (YamlSubset.YamlException e) {
+            mapRejected = true;
+        }
+        check("行内映射 {..} 被明确拒绝", mapRejected);
+
+        // F) 内置默认值 = B3 之前的硬编码（行为不变的硬性约束）
+        ExperimentConfig def = ExperimentConfig.defaults();
+        checkEq("默认 cores=8", 8, def.cores);
+        checkEq("默认 total_test_cases=100", 100, def.totalTestCases);
+        checkEq("默认 tasks_per_case=60", 60, def.tasksPerCase);
+        checkEq("默认 seed=42", 42L, def.seed);
+        checkEq("默认 utilization_levels（顺序敏感）",
+                Arrays.toString(new double[] {0.6, 0.8, 1.0, 1.2, 1.5}),
+                Arrays.toString(def.utilizationLevels));
+        checkEq("默认 high_cache_sensitivity_ratio=0.7",
+                0.7, def.highCacheSensitivityRatio);
+        checkEq("默认 cc_weights（L1 权重最高）",
+                Arrays.toString(new double[] {0.5, 0.3, 0.15, 0.05}),
+                Arrays.toString(def.ccWeights));
+        checkEq("默认 cache_level=3", 3, def.cacheLevel);
+        checkEq("默认 level2_core_num=2", 2, def.level2CoreNum);
+        check("默认走单种子路径（seeds == null）", def.seeds == null);
+
+        // G) 未知键必须报错（拼错一个字母不能静默忽略）
+        boolean unknownRejected = false;
+        String unknownMsg = "";
+        try {
+            // 借 defaults() + 反射不可行，这里走公开的 load 路径
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("yat-cfg-", ".yaml");
+            java.nio.file.Files.write(tmp, Arrays.asList(
+                    "schema_version: 1", "experiment:", "  utilisation_levels: [0.5]"),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                ExperimentConfig.load(tmp);
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (ExperimentConfig.ConfigException e) {
+            unknownRejected = e.getMessage().contains("utilisation_levels");
+            unknownMsg = e.getMessage();
+        } catch (Exception e) {
+            unknownMsg = e.toString();
+        }
+        check("未知键被拒绝且回显键名", unknownRejected);
+
+        // H) schema_version 缺失/不匹配必须分开报错（便于定位是文件旧还是代码旧）
+        boolean schemaMissing = false;
+        boolean schemaMismatch = false;
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("yat-cfg-", ".yaml");
+            try {
+                java.nio.file.Files.write(tmp, Arrays.asList("experiment:", "  cores: 2"),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                ExperimentConfig.load(tmp);
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (ExperimentConfig.ConfigException e) {
+            schemaMissing = e.getMessage().contains("schema_version");
+        } catch (Exception ignored) {
+            // 保持 false
+        }
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("yat-cfg-", ".yaml");
+            try {
+                java.nio.file.Files.write(tmp, Arrays.asList("schema_version: 99"),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                ExperimentConfig.load(tmp);
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (ExperimentConfig.ConfigException e) {
+            schemaMismatch = e.getMessage().contains("只支持");
+        } catch (Exception ignored) {
+            // 保持 false
+        }
+        check("缺少 schema_version 时明确报错", schemaMissing);
+        check("schema_version 不匹配时明确报错", schemaMismatch);
+
+        // I) 语义校验：比例越界不做自动截断，而是失败
+        boolean ratioRejected = false;
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("yat-cfg-", ".yaml");
+            try {
+                java.nio.file.Files.write(tmp, Arrays.asList(
+                        "schema_version: 1", "experiment:",
+                        "  high_cache_sensitivity_ratio: 1.5"),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                ExperimentConfig.load(tmp);
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (ExperimentConfig.ConfigException e) {
+            ratioRejected = e.getMessage().contains("[0,1]");
+        } catch (Exception ignored) {
+            // 保持 false
+        }
+        check("high_cache_sensitivity_ratio 越界被拒绝（不自动截断）", ratioRejected);
+
+        // J) cc_weights 长度必须为 4（[L1,L2,L3,Memory]）
+        boolean weightsRejected = false;
+        try {
+            java.nio.file.Path tmp = java.nio.file.Files.createTempFile("yat-cfg-", ".yaml");
+            try {
+                java.nio.file.Files.write(tmp, Arrays.asList(
+                        "schema_version: 1", "system:", "  cc_weights: [0.5, 0.5]"),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                ExperimentConfig.load(tmp);
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmp);
+            }
+        } catch (ExperimentConfig.ConfigException e) {
+            weightsRejected = e.getMessage().contains("元素个数");
+        } catch (Exception ignored) {
+            // 保持 false
+        }
+        check("cc_weights 长度不为 4 被拒绝", weightsRejected);
+
+        // K) 命令行覆盖优先级高于配置文件
+        ExperimentConfig cfg = ExperimentConfig.defaults();
+        cfg.overrideCores(2);
+        checkEq("CLI 覆盖生效", 2, cfg.cores);
+        check("覆盖项被标记为显式设置", cfg.isExplicit("experiment.cores"));
+        check("未覆盖项不算显式设置", !cfg.isExplicit("experiment.tasks_per_case"));
+
+        // L) 配置写回 SystemParameters 后不共享数组（防外部改动污染配置）
+        ExperimentConfig cfg2 = ExperimentConfig.defaults();
+        cfg2.applyToSystemParameters();
+        SystemParameters.cc_weights[0] = 999.0;
+        checkNear("applyToSystemParameters 拷贝而非共享数组",
+                ExperimentConfig.DEFAULT_CC_WEIGHTS[0], cfg2.ccWeights[0], 1e-12);
+        // 复位，避免影响后续用例
+        new ExperimentConfigProxy().restoreWeights();
+    }
+
+    /** 用于把 SystemParameters 恢复到类默认值的极小代理（测试卫生）。 */
+    private static final class ExperimentConfigProxy {
+        void restoreWeights() {
+            SystemParameters.cc_weights = new double[] {0.25, 0.25, 0.25, 0.25};
+        }
+    }
+
     public static void main(String[] args) {
         System.out.println("==========================================");
         System.out.println(" Yat-CAShed 模拟器单元测试");
@@ -452,6 +648,7 @@ public class YatSimulatorTest {
         testCacheAware();
         testSpeedupBenefitBoundaries();
         testFairBaseline();
+        testConfig();
 
         System.out.println("\n==========================================");
         System.out.printf(" 通过: %d   失败: %d%n", passed, failed);

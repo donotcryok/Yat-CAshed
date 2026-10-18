@@ -1,0 +1,58 @@
+# ============================================================
+# Yat-CAShed 调度模拟器 —— 默认实验配置
+# ------------------------------------------------------------
+# 用法:
+#   make -C simulator run                # 自动读取本文件
+#   java ... AlgorithmComparisonExperiment --config=config/paper.yaml
+#   YAT_SIM_CONFIG=config/paper.yaml make -C simulator run
+#
+# 优先级: 代码内默认值  <  本文件  <  命令行参数
+# 因此 `--cases=5 --seed=42 --no-viz` 这类 CLI 覆盖始终生效。
+#
+# 本文件的取值与「B3 之前」的硬编码完全一致，用于保证行为不变。
+# 改一列参数请新建 profile 文件（见 README.md），不要直接改本文件。
+#
+# 键名写错会直接报错并指出行号，不会被静默忽略。
+# 结构变更时递增 schema_version。
+# ============================================================
+
+schema_version: 1
+
+experiment:
+  # 处理器核心数 (= SystemParameters.coreNum)
+  cores: 8
+
+  # 总测试案例数；会尽量均匀分配到各利用率级别
+  total_test_cases: 100
+
+  # 每个案例生成的 DAG 任务数
+  tasks_per_case: 60
+
+  # 单种子路径使用；与 seeds 互斥（seeds 非 null 时本项被忽略）
+  seed: 42
+
+  # 多随机种子：写成列表表示启用多种子聚合统计；null 表示单种子路径
+  # 例: [1, 2, 3]  或  留 null 只用 seed
+  seeds: null
+
+  # 是否调用 Python 生成图表（CI/冒烟建议 false）
+  enable_viz: true
+
+  # 是否使用旧的（不公平）度量口径，仅用于复现历史结果
+  legacy_metrics: false
+
+  # 利用率级别扫描；顺序即执行顺序，允许重复或不单调
+  utilization_levels: [0.6, 0.8, 1.0, 1.2, 1.5]
+
+  # 高缓存敏感任务占比 ∈ [0,1]，用于突出 Cache-Aware 的优势
+  high_cache_sensitivity_ratio: 0.7
+
+system:
+  # 缓存层级数（不含主存）
+  cache_level: 3
+
+  # 每 N 个核心共享一个 L2 缓存；0 表示不建模 L2 共享
+  level2_core_num: 2
+
+  # 缓存层级权重 [L1, L2, L3, Memory]，须全非负且和 > 0
+  cc_weights: [0.5, 0.3, 0.15, 0.05]

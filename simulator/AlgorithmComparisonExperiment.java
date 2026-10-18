@@ -1,4 +1,6 @@
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -13,6 +15,7 @@ import analyzer.PerformanceAnalyzer.ExperimentResult;
 import entity.Node;
 import entity.SharedCacheModel;
 import generator.EnhancedTaskGenerator;
+import parameters.ExperimentConfig;
 import parameters.SystemParameters;
 import visualizer.ResultVisualizer;
 
@@ -48,22 +51,31 @@ import visualizer.ResultVisualizer;
  * @author Cache-Aware Task Scheduling System
  */
 public class AlgorithmComparisonExperiment {    
-    // ==================== 实验配置常量 ====================
-    
-    /** 系统处理器核心数量（可通过 --cores= 覆盖） */
-    private static int CORES = 8;
-    
-    /** 总测试案例数量（可通过 --cases= 覆盖） */
-    private static int TOTAL_TEST_CASES = 100;
-    
-    /** 每个测试案例的任务数量（可通过 --tasks= 覆盖） */
-    private static int TASKS_PER_CASE = 60;
+    // ==================== 实验配置（B3：外置到 config/*.yaml） ====================
+    //
+    // 这些字段不再硬编码：先取 ExperimentConfig 的内置默认值，再由 --config 指向的
+    // YAML 覆盖，最后由命令行覆盖。三者优先级在 ExperimentConfig 的类注释里有说明。
+    //
+    // 保留 `private static` 字段形态（而不是到处传 CONFIG）是为了让本轮改动只触及
+    // 配置装配点，不改动实验主体的计算路径——降低回归风险。
 
-    /** 随机种子（可通过 --seed= 覆盖，保证可复现） */
-    private static long SEED = 42;
+    /** 当前生效的配置（含来源信息，供启动时打印）。 */
+    private static ExperimentConfig CONFIG = ExperimentConfig.defaults();
 
-    /** 是否生成可视化（--no-viz 关闭；快速/CI 场景建议关闭） */
-    private static boolean ENABLE_VIZ = true;
+    /** 系统处理器核心数量（config: experiment.cores / --cores=） */
+    private static int CORES = ExperimentConfig.DEFAULT_CORES;
+
+    /** 总测试案例数量（config: experiment.total_test_cases / --cases=） */
+    private static int TOTAL_TEST_CASES = ExperimentConfig.DEFAULT_TOTAL_TEST_CASES;
+
+    /** 每个测试案例的任务数量（config: experiment.tasks_per_case / --tasks=） */
+    private static int TASKS_PER_CASE = ExperimentConfig.DEFAULT_TASKS_PER_CASE;
+
+    /** 随机种子（config: experiment.seed / --seed=，保证可复现） */
+    private static long SEED = ExperimentConfig.DEFAULT_SEED;
+
+    /** 是否生成可视化（config: experiment.enable_viz / --no-viz 关闭） */
+    private static boolean ENABLE_VIZ = ExperimentConfig.DEFAULT_ENABLE_VIZ;
 
     /**
      * 是否使用旧的（不公平）度量口径，仅用于复现历史结果做对比。
@@ -72,28 +84,25 @@ public class AlgorithmComparisonExperiment {
      * {@code CacheAware_v2.calculateExecutionTime()}，且命中率由
      * {@code PerformanceAnalyzer} 按算法名估算。默认关闭，即公平基线（C1）。
      */
-    private static boolean LEGACY_METRICS = false;
+    private static boolean LEGACY_METRICS = ExperimentConfig.DEFAULT_LEGACY_METRICS;
 
-    /** 多随机种子（--seeds=1,2,3 或 --seeds=5 表示 1..5）；为空表示只用 seed。 */
+    /** 多随机种子（config: experiment.seeds / --seeds=1,2,3）；为 null 表示只用 seed。 */
     private static long[] SEEDS = null;
-    
-    /** 
-     * 系统利用率测试级别数组
-     * 覆盖从轻载到重载的不同系统负载情况
+
+    /**
+     * 系统利用率测试级别数组（config: experiment.utilization_levels）。
+     * 覆盖从轻载到重载的不同系统负载情况；顺序即执行顺序。
+     *
+     * <p>注意：由 {@code final} 改为可配置——这正是 B3 要解掉的一个结。
      */
-    private static final double[] UTILIZATION_LEVELS = {
-        0.6,  // 轻载：60%利用率
-        0.8,  // 中载：80%利用率  
-        1.0,  // 满载：100%利用率
-        1.2,  // 轻度过载：120%利用率
-        1.5   // 重度过载：150%利用率
-    };
-    
-    /** 
-     * 高缓存敏感任务比例
-     * 70%的任务具有高缓存敏感度，用于突出Cache-Aware算法的优势
+    private static double[] UTILIZATION_LEVELS = ExperimentConfig.DEFAULT_UTILIZATION_LEVELS.clone();
+
+    /**
+     * 高缓存敏感任务比例（config: experiment.high_cache_sensitivity_ratio）。
+     * 用于突出 Cache-Aware 算法的优势；同样由 {@code final} 改为可配置。
      */
-    private static final double HIGH_CACHE_SENSITIVITY_RATIO = 0.7;
+    private static double HIGH_CACHE_SENSITIVITY_RATIO =
+            ExperimentConfig.DEFAULT_HIGH_CACHE_SENSITIVITY_RATIO;
     
     /** 性能分析器实例 */
     private static PerformanceAnalyzer analyzer;
@@ -108,41 +117,92 @@ public class AlgorithmComparisonExperiment {
      * 
      * @param args 命令行参数（当前未使用）
      */
+    /** 打印用法。 */
+    private static void printUsage() {
+        System.out.println("用法: java AlgorithmComparisonExperiment [选项]");
+        System.out.println();
+        System.out.println("配置文件（优先级：内置默认 < 配置文件 < 命令行）:");
+        System.out.println("  --config=PATH     指定 YAML 配置（不存在会报错，不会静默回落）");
+        System.out.println("                    未指定时依次尝试 $YAT_SIM_CONFIG、");
+        System.out.println("                    config/default.yaml、simulator/config/default.yaml");
+        System.out.println();
+        System.out.println("规模与种子:");
+        System.out.println("  --cores=N         处理器核心数");
+        System.out.println("  --cases=N         总测试案例数");
+        System.out.println("  --tasks=N         每案例任务数");
+        System.out.println("  --seed=N          单随机种子");
+        System.out.println("  --seeds=a,b,c     多随机种子；也可写 --seeds=K 表示 1..K");
+        System.out.println();
+        System.out.println("度量与输出:");
+        System.out.println("  --legacy-metrics  使用旧的（不公平）口径复现历史结果");
+        System.out.println("  --no-viz          跳过 Python 可视化（快速/CI 场景）");
+        System.out.println("  --print-config    打印最终生效的配置后继续运行");
+        System.out.println("  -h, --help        打印本帮助并退出");
+    }
+
     /**
-     * 解析命令行参数，使实验规模/种子可配置（便于 CI 快速冒烟与可复现实验）。
+     * 解析命令行参数并装配配置。
      *
-     * 支持:
-     *   --cores=N      处理器核心数（默认 8）
-     *   --cases=N      总测试案例数（默认 100）
-     *   --tasks=N      每案例任务数（默认 60）
-     *   --seed=N       随机种子（默认 42）
-     *   --seeds=a,b,c  多随机种子；也可写 --seeds=K 表示 1..K
-     *   --legacy-metrics  使用旧的（不公平）口径复现历史结果
-     *   --no-viz       跳过 Python 可视化（快速/CI 场景）
-     *   -h, --help     打印帮助
+     * <p>两趟扫描是刻意的：配置文件必须<b>先于</b>任何覆盖项加载，而 CLI 中
+     * {@code --config=} 的位置不应影响其余参数的语义（否则
+     * {@code --cores=4 --config=a.yaml} 与 {@code --config=a.yaml --cores=4}
+     * 结果不同，这类隐性顺序依赖极难排查）。
+     *
+     * <p>顺序：
+     * <ol>
+     *   <li>第一趟：找 {@code -h/--help}（立即退出）与 {@code --config=}</li>
+     *   <li>加载配置 → 写入静态字段</li>
+     *   <li>第二趟：应用 CLI 覆盖（覆盖项永远赢）</li>
+     * </ol>
      */
     private static void parseArgs(String[] args) {
+        Path configPath = null;
+        for (String arg : args) {
+            if (arg.equals("-h") || arg.equals("--help")) {
+                printUsage();
+                System.exit(0);
+            }
+            if (arg.startsWith("--config=")) {
+                configPath = Paths.get(arg.substring("--config=".length()));
+            }
+        }
+
+        try {
+            CONFIG = ExperimentConfig.discover(configPath);
+        } catch (Exception e) {
+            System.err.println("❌ 配置加载失败: " + e.getMessage());
+            System.exit(2);
+        }
+        applyConfigToFields();
+
+        boolean printConfig = false;
         for (String arg : args) {
             try {
-                if (arg.equals("--no-viz")) {
+                if (arg.startsWith("--config=")) {
+                    // 已在第一趟处理
+                } else if (arg.equals("--no-viz")) {
                     ENABLE_VIZ = false;
+                    CONFIG.overrideEnableViz(false);
                 } else if (arg.equals("--legacy-metrics")) {
                     LEGACY_METRICS = true;
-                } else if (arg.equals("-h") || arg.equals("--help")) {
-                    System.out.println("用法: java AlgorithmComparisonExperiment "
-                        + "[--cores=N] [--cases=N] [--tasks=N] [--seed=N] [--seeds=a,b,c] "
-                        + "[--legacy-metrics] [--no-viz]");
-                    System.exit(0);
+                    CONFIG.overrideLegacyMetrics(true);
+                } else if (arg.equals("--print-config")) {
+                    printConfig = true;
                 } else if (arg.startsWith("--cores=")) {
                     CORES = Math.max(1, Integer.parseInt(arg.substring(8)));
+                    CONFIG.overrideCores(CORES);
                 } else if (arg.startsWith("--cases=")) {
                     TOTAL_TEST_CASES = Math.max(1, Integer.parseInt(arg.substring(8)));
+                    CONFIG.overrideTotalTestCases(TOTAL_TEST_CASES);
                 } else if (arg.startsWith("--tasks=")) {
                     TASKS_PER_CASE = Math.max(1, Integer.parseInt(arg.substring(8)));
+                    CONFIG.overrideTasksPerCase(TASKS_PER_CASE);
                 } else if (arg.startsWith("--seed=")) {
                     SEED = Long.parseLong(arg.substring(7));
+                    CONFIG.overrideSeed(SEED);
                 } else if (arg.startsWith("--seeds=")) {
                     SEEDS = parseSeeds(arg.substring(8));
+                    CONFIG.overrideSeeds(SEEDS);
                 } else {
                     System.out.println("⚠️  忽略未知参数: " + arg);
                 }
@@ -151,6 +211,30 @@ public class AlgorithmComparisonExperiment {
                 System.exit(2);
             }
         }
+        if (printConfig) {
+            System.out.println("--- 最终生效配置 ---");
+            System.out.println(CONFIG.describe());
+            System.out.println("--------------------");
+            System.out.println();
+        }
+    }
+
+    /**
+     * 把 {@link ExperimentConfig} 的取值同步到本类的运行期字段。
+     *
+     * <p>单点装配：新增一个可配置项时只需要在这里加一行，不必再回头找散落在
+     * 实验主体里的字面量。
+     */
+    private static void applyConfigToFields() {
+        CORES = CONFIG.cores;
+        TOTAL_TEST_CASES = CONFIG.totalTestCases;
+        TASKS_PER_CASE = CONFIG.tasksPerCase;
+        SEED = CONFIG.seed;
+        SEEDS = CONFIG.seeds;
+        ENABLE_VIZ = CONFIG.enableViz;
+        LEGACY_METRICS = CONFIG.legacyMetrics;
+        UTILIZATION_LEVELS = CONFIG.utilizationLevels.clone();
+        HIGH_CACHE_SENSITIVITY_RATIO = CONFIG.highCacheSensitivityRatio;
     }
 
     /**
@@ -336,20 +420,17 @@ public class AlgorithmComparisonExperiment {
      * 这些参数直接影响算法的性能表现和缓存命中率计算。
      */
     private static void setupSystemParameters() {
-        // 设置处理器核心数
-        SystemParameters.coreNum = CORES;
-        
-        // 配置缓存层次权重 - 更重视L1缓存的影响
-        SystemParameters.cc_weights = new double[]{0.5, 0.3, 0.15, 0.05}; 
-        SystemParameters.cacheLevel = 3; // 三级缓存架构
-        SystemParameters.Level2CoreNum = 2; // L2缓存由2个核心共享
-        
+        // 单点写入：全部取值来自 CONFIG（config/*.yaml 或内置默认），
+        // 这里不再保留任何魔法数字，避免"配置改了这一处、别处还有一份"。
+        CONFIG.applyToSystemParameters();
+
         System.out.println("🔧 系统参数配置:");
-        System.out.println("   缓存权重: L1=" + SystemParameters.cc_weights[0] + 
-                          " L2=" + SystemParameters.cc_weights[1] + 
-                          " L3=" + SystemParameters.cc_weights[2] + 
-                          " Mem=" + SystemParameters.cc_weights[3]);
+        System.out.println("   缓存权重: L1=" + SystemParameters.cc_weights[0]
+                + " L2=" + SystemParameters.cc_weights[1]
+                + " L3=" + SystemParameters.cc_weights[2]
+                + " Mem=" + SystemParameters.cc_weights[3]);
         System.out.println("   L2缓存共享: 每" + SystemParameters.Level2CoreNum + "个核心共享");
+        System.out.println("   缓存层级数: " + SystemParameters.cacheLevel);
         System.out.println();
     }
       /**

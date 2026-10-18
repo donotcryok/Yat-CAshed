@@ -167,6 +167,56 @@ public class ResultVisualizer {
         }
     }
     
+    /**
+     * CSV 列定义（schema 的事实来源）。
+     *
+     * <p><b>这是一个契约，不是实现细节。</b>列名与顺序被以下消费者按名读取：
+     * {@code visualizer/visualize.py}、{@code docs/EXPERIMENT_REPORT.md} 里记录的历史结果，
+     * 以及任何下游脚本。改动列名/顺序等同于破坏性变更，必须同步：
+     * <ol>
+     *   <li>本常量</li>
+     *   <li>{@link #CSV_FORMAT} 的占位符与顺序</li>
+     *   <li>{@link #CSV_SCHEMA_VERSION}</li>
+     *   <li>{@code docs/SCHEMA.md} 的字段表</li>
+     *   <li>{@code visualize.py} 的列名引用</li>
+     * </ol>
+     */
+    public static final String[] CSV_COLUMNS = {
+            "Algorithm",            // 算法名：WFD / CacheAware_v2
+            "TestCase",             // 案例序号（从 1 开始，跨利用率级别连续）
+            "Makespan",             // 总完成时间
+            "CacheHit",             // 实测缓存命中率 [0,1]
+            "TotalExecutionTime",   // 该案例所有任务执行时间之和
+            "AvgExecutionTime",     // 单任务平均执行时间
+            "ResponseTime",         // 平均响应时间
+            "CpuUtilization",       // CPU 利用率 [0,1]
+            "LoadBalance"           // 负载均衡度 [0,1]，越高越均衡
+    };
+
+    /** 与 {@link #CSV_COLUMNS} 严格等长的格式串。 */
+    private static final String CSV_FORMAT = "%s,%d,%.2f,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f%n";
+
+    /**
+     * CSV schema 版本。仅在<b>列集合或语义</b>变化时递增；
+     * 只改数值精度（格式串里的位数）不递增，因为不破坏按名读取。
+     */
+    public static final int CSV_SCHEMA_VERSION = 1;
+
+    /** 自检：列数与格式串占位符数必须一致，否则运行期会静默错位。 */
+    static {
+        int placeholders = 0;
+        for (int i = 0; i < CSV_FORMAT.length(); i++) {
+            if (CSV_FORMAT.charAt(i) == '%' && i + 1 < CSV_FORMAT.length()
+                    && CSV_FORMAT.charAt(i + 1) != '%' && CSV_FORMAT.charAt(i + 1) != 'n') {
+                placeholders++;
+            }
+        }
+        if (placeholders != CSV_COLUMNS.length) {
+            throw new IllegalStateException("CSV_COLUMNS 有 " + CSV_COLUMNS.length
+                    + " 列，但 CSV_FORMAT 有 " + placeholders + " 个占位符");
+        }
+    }
+
     public void generateTrendChart(Map<String, List<ExperimentResult>> algorithmResults) {
         System.out.println("\n=== 性能趋势分析 ===");
     }    public void exportToCSV(Map<String, List<ExperimentResult>> algorithmResults, String filename) {
@@ -180,13 +230,14 @@ public class ResultVisualizer {
             
             // 写入CSV文件，包含执行时间数据
             try (FileWriter writer = new FileWriter(filename)) {
-                writer.write("Algorithm,TestCase,Makespan,CacheHit,TotalExecutionTime,AvgExecutionTime,ResponseTime,CpuUtilization,LoadBalance\n");
+                writer.write(String.join(",", CSV_COLUMNS));
+                writer.write('\n');
                 for (String algorithm : algorithmResults.keySet()) {
                     for (ExperimentResult result : algorithmResults.get(algorithm)) {
-                        writer.write(String.format("%s,%d,%.2f,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f\n",
-                            algorithm, 
-                            result.testCaseId, 
-                            result.makespan, 
+                        writer.write(String.format(CSV_FORMAT,
+                            algorithm,
+                            result.testCaseId,
+                            result.makespan,
                             result.cacheHitRatio,
                             result.totalTaskExecutionTime,
                             result.averageTaskExecutionTime,
@@ -197,11 +248,93 @@ public class ResultVisualizer {
                 }
                 System.out.println("✅ CSV数据已导出到: " + filename);
             }
+            writeMetadataSidecar(filename, algorithmResults);
         } catch (IOException e) {
             System.err.println("❌ CSV导出失败: " + e.getMessage());
         }
     }
-      public void generateComparisonMatrix(Map<String, List<ExperimentResult>> algorithmResults) {
+    /**
+     * 在 CSV 旁边写一个 {@code <name>.meta.json} 元数据旁文件。
+     *
+     * <p>为什么不做「在 CSV 前面加几行注释」：CSV 没有标准注释语法，
+     * 多加的 `#` 行会被 {@code pandas.read_csv} 当成数据行，直接破坏既有消费者。
+     * 旁文件因此是最小侵入的选择。
+     *
+     * <p>旁文件记录的是<b>「这份 CSV 是在什么条件下产生的」</b>：
+     * schema 版本、列名、算法集合、行数。它<b>不</b>记录实验参数——
+     * 参数属于 {@code config/*.yaml}，重复记录会造成两处事实互相矛盾。
+     *
+     * <p>失败不致命：CSV 已经写好，旁文件只影响可追溯性，因此这里把异常降级为警告。
+     */
+    private void writeMetadataSidecar(String csvFilename,
+                                      Map<String, List<ExperimentResult>> algorithmResults) {
+        File csv = new File(csvFilename);
+        String metaName = csvFilename + ".meta.json";
+        int rows = 0;
+        for (List<ExperimentResult> list : algorithmResults.values()) {
+            rows += list.size();
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n");
+        sb.append("  \"csv_schema_version\": ").append(CSV_SCHEMA_VERSION).append(",\n");
+        sb.append("  \"csv_file\": \"").append(jsonEscape(csv.getName())).append("\",\n");
+        sb.append("  \"columns\": [");
+        for (int i = 0; i < CSV_COLUMNS.length; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append('"').append(jsonEscape(CSV_COLUMNS[i])).append('"');
+        }
+        sb.append("],\n");
+        sb.append("  \"algorithms\": [");
+        boolean first = true;
+        for (String algo : algorithmResults.keySet()) {
+            if (!first) {
+                sb.append(", ");
+            }
+            sb.append('"').append(jsonEscape(algo)).append('"');
+            first = false;
+        }
+        sb.append("],\n");
+        sb.append("  \"data_rows\": ").append(rows).append(",\n");
+        sb.append("  \"note\": \"实验参数见 config/*.yaml；本文件只描述 CSV 结构\"\n");
+        sb.append("}\n");
+
+        try (FileWriter w = new FileWriter(metaName)) {
+            w.write(sb.toString());
+            System.out.println("🧾 元数据旁文件已导出到: " + metaName);
+        } catch (IOException e) {
+            System.err.println("⚠️  元数据旁文件写入失败（CSV 本身已正常）: " + e.getMessage());
+        }
+    }
+
+    /** JSON 字符串转义（仅处理会破坏 JSON 结构的最小集合）。 */
+    private static String jsonEscape(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\n': out.append("\\n");  break;
+                case '\r': out.append("\\r");  break;
+                case '\t': out.append("\\t");  break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
+    }
+
+    public void generateComparisonMatrix(Map<String, List<ExperimentResult>> algorithmResults) {
         // 移除对比矩阵输出，由主程序控制输出格式
     }
 }
