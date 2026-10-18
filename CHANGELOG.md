@@ -3,6 +3,54 @@
 本项目自本文件引入之日起采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录变更。
 日期格式为 `YYYY-MM-DD`。
 
+## [Unreleased] — 文档治理与测试入口整理（无内核行为变更）
+
+本轮只做「检查、整理、可读性」，不改调度算法。
+
+### 新增（Added）
+
+- **项目主页** [`docs/index.html`](docs/index.html)：单文件静态页（无外部字体/CDN），
+  含项目定位、四个要解决的问题、实测结果、决策链路图、快速开始与文档导航；
+  配套 [`docs/.nojekyll`](docs/.nojekyll)，GitHub Pages 的 Source 设为 `main` + `/docs` 即可发布。
+  主页明确标注「AJLR 已接管选核（98%），但墙钟仍慢约 2 倍」，不美化结论。
+- **操作手册** [`docs/OPERATIONS.md`](docs/OPERATIONS.md)：三分钟自检 → 编译 → 验证 A8
+  → 计数器读法（附实测基线）→ 故障速查 → 补丁工作流 → 提交前清单。
+
+### 修复（Fixed）
+
+- **四个 QEMU 启动脚本会让 guest 退化成单核**：`start_test_environment.sh`、
+  `start_qemu_simple.sh`、`start_qemu_yat_test.sh`、`start_yat_simple_test.sh`
+  都带 `acpi=off` / `noapic` / `nolapic`，且前两个还用 `-kernel vmlinux`
+  （缺 PVH note，QEMU 无法启动）。统一改为 bzImage + 显式 `-smp` +
+  `panic=1 nokaslr` + `-no-reboot`，并删掉全部 ACPI 关闭参数
+  （`-kernel bzImage` 绕过 BIOS，AP 只能靠 ACPI MADT 枚举）。
+- `start_test_environment.sh` 的提示里还引用了早已删除的程序名
+  （`test_yat_core_functions` / `test_yat_hash_operations`），改为实际存在的
+  `yat_simple_test` / `yat_bench`，并说明「交互式探索」与「出数据」两种入口的分工。
+- `quick_test_guide.sh` 让用户 `-kernel ../vmlinux`，同样改为 bzImage 并补 `-smp 4`。
+
+### 变更（Changed）
+
+- **CI 与 `make verify-all` 对齐**：新增 `check_names.py`（命名门禁）与
+  `kernel-patch.sh --check`（补丁 SHA256 + hunk 数）。此前本地门禁比 CI 更严，
+  存在「CI 绿但补丁已与源码分叉」的漏检可能。
+- README 的构建段改为可直接执行的 `make kernel-obj` / `make kernel-build` /
+  `compare_cfs_vs_yat.sh` 三条命令，并给出实测基线与限定说明；
+  符号统计更正为实测的 29 声明 / 27 非 static 定义 / 28 static 定义。
+
+### 文档更正（Docs）
+
+- ROADMAP 总览表把 A8 由「实测待跑」改为「已完成（接管率 98%）」；
+  `stats` 说明由 7 项计数器更新为 27 项并按决策链路分组；
+  A7 节那批「yat 快 4 倍」的 CSV 明确标注**已作废**并解释原因
+  （当时 yat 类里可能没有任何任务）。
+- SCHEMA §2 重写：现行 `results/cfs_vs_yat.csv`（13 列）为正文，
+  遗留的 `test_visualization/performance_results.csv` 降级为历史资料并标注不可用。
+- ARCHITECTURE §5.1 关闭「接管率尚未实测」，写入 512/254/254/925·0·14 与 98%，
+  同时保留「墙钟差异 ≠ AJLR 收益」的限定。
+
+---
+
 ## [Unreleased] — A8 实跑验证：修掉 4 处致命接线缺陷，接管率 98%
 
 本轮把 A8 从「已接线（实测待跑）」推进到「**实跑通过**」。第一次真正跑 yat 负载时

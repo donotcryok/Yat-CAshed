@@ -58,14 +58,30 @@ make simulator-verify   # 编译 + 依赖自检 + 58 条断言 + 快速实验
 涉及内核的改动，建议先单文件编译以获得快速反馈：
 
 ```bash
-cd linux-6.8-main && make kernel/sched/yat_casched.o
-make -C .. symbol-check   # 头文件声明 vs 实现定义
+make kernel-obj           # 只编 kernel/sched/yat_casched.o（秒级反馈）
+make symbol-check         # 头文件声明 vs 实现定义
+```
+
+**改了内核树里受补丁管理的文件后，必须重新生成补丁并往返自检**，
+否则 `patches/` 会与源码悄悄分叉（内核整树不入库，别人 clone 后靠补丁重建）：
+
+```bash
+scripts/gen_kernel_patches.sh --upstream /tmp/up --out patches
+make patch-check
+make patch-selftest UPSTREAM=/tmp/up
 ```
 
 全量门禁（提交 PR 前推荐）：
 
 ```bash
-make verify-all   # check + docs-check + symbol-check + simulator-verify
+make verify-all   # check + docs-check + name-check + symbol-check + patch-check + simulator-verify
+```
+
+要验证调度行为（而不只是编译通过），跑一次 A8 冒烟：
+
+```bash
+linux-6.8-main/yat_test_scripts/compare_cfs_vs_yat.sh \
+    --tasks 4 --iters 200000 --affinity none --sleep-us 200 --timeout 120
 ```
 
 ## 4. 代码风格

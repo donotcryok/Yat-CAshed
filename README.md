@@ -55,8 +55,12 @@ Yat-CAShed/
 ├── Makefile                     # 顶层编排（check / docs-check / simulator / report）
 ├── .editorconfig / .gitattributes / .gitignore
 ├── docs/                        # 工程化文档体系（入口见 docs/README.md）
-├── scripts/                     # 仓库运维脚本（check_repo / check_symbols / check_docs / normalize_eol）
-├── .github/workflows/ci.yml     # CI（仓库检查 + 文档链接 + 符号一致性 + 模拟器回放）
+├── scripts/                     # 仓库运维脚本
+│   ├── check_repo.sh / check_symbols.sh / check_docs.py / check_names.py   # 门禁
+│   ├── kernel-patch.sh / gen_kernel_patches.sh                            # 补丁应用/生成
+│   ├── setup-kernel.sh                                                    # 从上游 v6.8 重建内核树
+│   └── normalize_eol.py                                                   # 行尾归一化
+├── .github/workflows/ci.yml     # CI（仓库检查 + 文档链接 + 命名 + 符号 + 补丁完整性 + 模拟器回放）
 ├── linux-6.8-main/              # Linux 6.8 内核源码 + Yat-CAShed 调度类
 │   ├── kernel/sched/yat_casched.c          # 调度器核心实现（AJLR，冲突已解决）
 │   ├── include/linux/sched/yat_casched.h   # 调度器头文件
