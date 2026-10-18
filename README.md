@@ -73,7 +73,7 @@ Yat-CAShed/
 │   ├── Simulator.md                          # 模拟器详细文档
 │   ├── AlgorithmComparisonExperiment.java    # 实验入口
 │   ├── allocation/                           # WFD / CacheAware 算法实现
-│   ├── tests/                                # 单元测试（58 断言）
+│   ├── tests/                                # 单元测试（102 断言）
 │   └── lib/                                  # commons-math3（唯一运行时依赖）
 └── report/                      # 论文、报告与参考资料
     ├── paper/                    # 毕业论文 LaTeX 源码（章节文件平铺）
@@ -118,7 +118,7 @@ Yat-CAShed/
 .\build.bat run            # 编译 + 实验 + 可视化
 
 # Linux / macOS
-make -C simulator test      # 单元测试（58 断言，零依赖）
+make -C simulator test      # 单元测试（102 断言，零依赖）
 make -C simulator verify    # 编译 + 依赖库自检 + 单元测试 + 快速实验
 make -C simulator run-quick # 轻量可复现回放（5 用例 / 20 任务 / 种子 42）
 make -C simulator run       # 全量实验（100 用例）+ 可视化

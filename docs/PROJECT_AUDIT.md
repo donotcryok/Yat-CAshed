@@ -16,7 +16,7 @@
 | 受版本控制文件数 | 83,568 | 其中内核树 83,499 |
 | 本项目自有文件 | 约 69 个 | 其余均为 Linux 6.8 上游文件 |
 | 模拟器运行时依赖 | 1 个 JAR（2.2 MB） | 已从 30 个精简到 1 个 |
-| 模拟器单元测试 | 58 条断言 | `make -C simulator test` |
+| 模拟器单元测试 | 102 条断言 | `make -C simulator test` |
 | 内核接口符号 | 29 声明 / 27 非 static 定义 / 28 static | 全部一致（A/B/C 三类不一致均为 0） |
 
 **结论**：代码主体（调度类 + 模拟器）体量很小，但仓库被整棵内核树与大二进制主导，
@@ -102,7 +102,7 @@
 make check        → exit 0（无冲突标记 / 无空文件 / 关键文件齐全）
 make docs-check   → exit 0（23 个 Markdown，154 条链接，0 失效）
 make symbol-check → exit 0（26 声明 / 26 非 static / 17 static）
-make simulator-test  → 58/58 断言通过
+make simulator-test  → 102/102 断言通过
 make report       → exit 0（25 页 PDF，0 缺字警告）
 ```
 

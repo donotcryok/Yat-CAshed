@@ -64,7 +64,8 @@ Yat-CAShed/
 │   │   ├── performance_results.csv
 │   │   ├── README.md
 │   │   └── img/                           # 已生成的图表与 summary
-│   └── yat_simple_test_env/               # 极简 QEMU initramfs 环境
+│   └── yat_simple_test_env/               # 极简 QEMU initramfs 环境（**运行产物**，
+│                                          #   由 build_yat_simple_test.sh 生成，不入库）
 │
 ├── simulator/                   # Java 缓存感知调度算法模拟器（Java 17+）
 │   ├── AlgorithmComparisonExperiment.java # 实验主入口（8 核 / 100 用例 / 60 任务，可由 config 覆盖）

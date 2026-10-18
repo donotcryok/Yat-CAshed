@@ -139,7 +139,7 @@ cd linux-6.8-main && make kernel/sched/yat_casched.o
 ### 验收
 
 ```bash
-make -C simulator test          # 既有 58 断言仍通过（重命名相关断言需同步更新）
+make -C simulator test          # 既有 102 断言仍通过（重命名相关断言需同步更新）
 make -C simulator run-multiseed # 新增目标：10 seed 批量
 ```
 

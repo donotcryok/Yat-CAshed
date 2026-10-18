@@ -196,7 +196,7 @@ allocation/ AllocationMethods, WFD, CacheAware_v1, CacheAware_v2
 analyzer/ PerformanceAnalyzer
 visualizer/ ResultVisualizer.java, visualize.py, requirements.txt
 lib/      commons-math3-3.6.1.jar（唯一运行时依赖，见 DEPENDENCIES.md）
-tests/    YatSimulatorTest.java（58 条断言）
+tests/    YatSimulatorTest.java（102 条断言）
 ```
 
 构建入口：[`Makefile`](../simulator/Makefile) 为**跨平台 GNU Make**（自动识别 OS/JDK/类路径分隔符），

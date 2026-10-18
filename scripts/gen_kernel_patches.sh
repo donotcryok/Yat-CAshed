@@ -46,9 +46,6 @@ NEW_FILES=(
   include/linux/sched/yat_casched.h
   include/trace/events/yat_casched.h
   kernel/sched/yat_casched.c
-  initramfs/init
-  initramfs_fixed/init
-  yat_simple_test_env/initramfs/init
   boot_test_scripts/README.md
   boot_test_scripts/SIMPLE_TEST_README.md
   boot_test_scripts/yat_bench.c
@@ -167,9 +164,6 @@ make_patch 0004-kernel-gitignore.patch \
 
 make_patch 0005-test-env.patch \
   "test: add Yat QEMU boot/test environments and CFS-vs-Yat benchmark" \
-  N:initramfs/init \
-  N:initramfs_fixed/init \
-  N:yat_simple_test_env/initramfs/init \
   N:boot_test_scripts/README.md \
   N:boot_test_scripts/SIMPLE_TEST_README.md \
   N:boot_test_scripts/yat_bench.c \

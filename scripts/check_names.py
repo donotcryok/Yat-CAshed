@@ -96,9 +96,6 @@ KERNEL_ALLOW_PREFIXES = (
     "linux-6.8-main/boot_test_scripts/",
     "linux-6.8-main/yat_test_scripts/",
     "linux-6.8-main/test_visualization/",
-    "linux-6.8-main/yat_simple_test_env/",
-    "linux-6.8-main/initramfs/",
-    "linux-6.8-main/initramfs_fixed/",
 )
 KERNEL_ALLOW_FILES = (
     "linux-6.8-main/kernel/sched/yat_casched.c",

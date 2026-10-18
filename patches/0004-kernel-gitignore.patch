@@ -40,7 +40,7 @@ Upstream: linux v6.8 (torvalds)
  
  # cscope files
  cscope.*
-@@ -170,3 +188,43 @@
+@@ -170,3 +188,42 @@
  
  # Rust analyzer configuration
  /rust-project.json
@@ -62,10 +62,9 @@ Upstream: linux v6.8 (torvalds)
 +/test_chroot/bin/
 +/test_chroot/lib/
 +/test_chroot/lib64/
-+/yat_simple_test_env/initramfs/bin/
-+/yat_simple_test_env/build/
-+/yat_simple_test_env/*.cpio.gz
-+/yat_simple_test_env/*.log
++#### yat_simple_test_env/ 完全由 build_yat_simple_test.sh 生成（脚本会先 rm -rf 再重建），
++#### 其中的 init 也是 heredoc 现写的；整目录不入库，避免「脚本删掉被跟踪的文件」。
++/yat_simple_test_env/
 +#### test_with_programs_* 是 create_test_initramfs.sh 的临时目录
 +####   _build/     —— 编译产物（二进制），保证 boot_test_scripts/ 物理上只有 .c
 +####   _initramfs/ —— cpio 归档用的目录树

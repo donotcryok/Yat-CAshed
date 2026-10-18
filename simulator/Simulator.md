@@ -435,7 +435,7 @@ simulator/
 │   ├── visualize.py                  # Python 图表生成（matplotlib/numpy）
 │   └── requirements.txt              # Python 依赖
 ├── 📁 tests/                      # 单元测试（零依赖，无需 JUnit）
-│   └── YatSimulatorTest.java         # 58 条断言
+│   └── YatSimulatorTest.java         # 102 条断言
 ├── 📁 lib/                        # 第三方库（仅 commons-math3）
 ├── 📁 classes/                    # 编译输出（git 忽略）
 ├── 📁 result/                     # 实验结果与图表（git 忽略）

@@ -379,7 +379,7 @@ smp=4，kernel #14）：
 - ✅ 结论：**仅 `commons-math3-3.6.1.jar`（约 2.2 MB）被真实依赖**（提供 `Pair`），
   其余 **29 个（≈97%）为死依赖**（含 `jython` 42 MB、`fastutil` 23 MB 等）。
 - ✅ **已移除 29 个死依赖**：`lib/` 由 77 MB → **2.2 MB**。移除前跑通
-  `make simulator-verify` 作为基线，移除后 58/58 断言通过、全量实验数值**逐位一致**。
+  `make simulator-verify` 作为基线，移除后 102/102 断言通过、全量实验数值**逐位一致**。
   29 个 JAR 均已被 git 跟踪，可随时从历史回滚。
 - ✅ 详见 [DEPENDENCIES.md](DEPENDENCIES.md)（审计命令、已移除清单、变更记录）。
 - ⏳ 可选后续：以自实现 `Pair` 完全删除 `commons-math3`，达成零第三方依赖。

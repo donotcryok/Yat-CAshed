@@ -94,7 +94,7 @@ cd simulator
 make help                # 查看全部目标
 make compile             # 编译
 make lib-test            # 依赖库自检
-make test                # 单元测试（tests/YatSimulatorTest.java，58 断言）
+make test                # 单元测试（tests/YatSimulatorTest.java，102 断言）
 make run-quick           # 轻量实验
 make run                 # 全量实验（100 用例）+ 可视化 + 3 张 300dpi 图表
 make picture             # 单独生成图表
