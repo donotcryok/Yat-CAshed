@@ -107,6 +107,8 @@ report/**/*.synctex.gz
 report/**/*.xdv
 report/**/*.bcf
 report/**/*.run.xml
+# hyperref 的书签/警告清单，纯编译中间产物
+report/**/*.out
 
 # --- 编辑器 / IDE ---
 .vscode/

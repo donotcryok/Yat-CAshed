@@ -1,0 +1,319 @@
+From: Yat-CAShed <noreply@example.com>
+Subject: [PATCH] sched: wire YAT_CASCHED into core, uapi, init and linker sections
+Upstream: linux v6.8 (torvalds)
+
+--- a/include/asm-generic/vmlinux.lds.h
++++ b/include/asm-generic/vmlinux.lds.h
+@@ -131,6 +131,7 @@
+ 	*(__dl_sched_class)			\
+ 	*(__rt_sched_class)			\
+ 	*(__fair_sched_class)			\
++	 *(__yat_casched_sched_class) \
+ 	*(__idle_sched_class)			\
+ 	__sched_class_lowest = .;
+ 
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -46,7 +46,7 @@
+ #include <linux/livepatch_sched.h>
+ #include <linux/uidgid_types.h>
+ #include <asm/kmap_size.h>
+-
++#include<linux/sched/yat_casched.h>
+ /* task_struct member predeclarations (sorted alphabetically): */
+ struct audit_context;
+ struct bio_list;
+@@ -797,6 +797,9 @@
+ 	struct sched_entity		se;
+ 	struct sched_rt_entity		rt;
+ 	struct sched_dl_entity		dl;
++	#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++    struct sched_yat_casched_entity yat_casched;
++    #endif
+ 	struct sched_dl_entity		*dl_server;
+ 	const struct sched_class	*sched_class;
+ 
+--- a/include/uapi/linux/sched.h
++++ b/include/uapi/linux/sched.h
+@@ -118,7 +118,9 @@
+ /* SCHED_ISO: reserved but not implemented yet */
+ #define SCHED_IDLE		5
+ #define SCHED_DEADLINE		6
+-
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++#define SCHED_YAT_CASCHED 8
++#endif
+ /* Can be ORed in to make sure the process is reverted back to SCHED_NORMAL on fork */
+ #define SCHED_RESET_ON_FORK     0x40000000
+ 
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1993,7 +1993,11 @@
+ 
+ config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
+ 	bool
+-
++config SCHED_CLASS_YAT_CASCHED
++	bool "YAT_CASCHED(Cache Awareness) sched class"
++	default n
++	help
++	  A scheduling mechanism based on cache awareness.
+ # It may be useful for an architecture to override the definitions of the
+ # SYSCALL_DEFINE() and __SYSCALL_DEFINEx() macros in <linux/syscalls.h>
+ # and the COMPAT_ variants in <linux/compat.h>, in particular to use a
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -91,6 +91,14 @@
+ 		.run_list	= LIST_HEAD_INIT(init_task.rt.run_list),
+ 		.time_slice	= RR_TIMESLICE,
+ 	},
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	.yat_casched	= {
++		.run_list	= LIST_HEAD_INIT(init_task.yat_casched.run_list),
++		.vruntime	= 0,
++		.slice		= 0,
++		.last_cpu	= -1,
++	},
++#endif	
+ 	.tasks		= LIST_HEAD_INIT(init_task.tasks),
+ #ifdef CONFIG_SMP
+ 	.pushable_tasks	= PLIST_NODE_INIT(init_task.pushable_tasks, MAX_PRIO),
+@@ -202,6 +210,7 @@
+ #ifdef CONFIG_SECURITY
+ 	.security	= NULL,
+ #endif
++
+ #ifdef CONFIG_SECCOMP_FILTER
+ 	.seccomp	= { .filter_count = ATOMIC_INIT(0) },
+ #endif
+--- a/init/main.c
++++ b/init/main.c
+@@ -1575,3 +1575,10 @@
+ 
+ 	integrity_load_keys();
+ }
++unsigned int sched_class_yat_casched_on;
++static int __init set_sched_class_yat_casched_on(char *str)
++{
++    sched_class_yat_casched_on = 1;
++    return 1;
++}
++early_param("fully-paritioned-fixed-priority-scheduling_class", set_sched_class_yat_casched_on);
+\ No newline at end of file
+--- a/kernel/sched/Makefile
++++ b/kernel/sched/Makefile
+@@ -32,3 +32,4 @@
+ obj-y += fair.o
+ obj-y += build_policy.o
+ obj-y += build_utility.o
++obj-$(CONFIG_SCHED_CLASS_YAT_CASCHED) += yat_casched.o
+\ No newline at end of file
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -17,6 +17,8 @@
+ #include <linux/pgtable_api.h>
+ #include <linux/wait_bit.h>
+ #include <linux/jiffies.h>
++
++
+ #include <linux/spinlock_api.h>
+ #include <linux/cpumask_api.h>
+ #include <linux/lockdep_api.h>
+@@ -86,7 +88,6 @@
+ 
+ #include "sched.h"
+ #include "stats.h"
+-
+ #include "autogroup.h"
+ #include "pelt.h"
+ #include "smp.h"
+@@ -95,6 +96,7 @@
+ #include "../workqueue_internal.h"
+ #include "../../io_uring/io-wq.h"
+ #include "../smpboot.h"
++#include <linux/sched/yat_casched.h>
+ 
+ EXPORT_TRACEPOINT_SYMBOL_GPL(ipi_send_cpu);
+ EXPORT_TRACEPOINT_SYMBOL_GPL(ipi_send_cpumask);
+@@ -2167,6 +2169,10 @@
+ 		prio = MAX_DL_PRIO - 1;
+ 	else if (rt_policy(policy))
+ 		prio = MAX_RT_PRIO - 1 - rt_prio;
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	else if (yat_casched_policy(policy))
++		prio = rt_prio;  /* 直接使用设置的优先级 */
++#endif
+ 	else
+ 		prio = NICE_TO_PRIO(nice);
+ 
+@@ -4544,6 +4550,14 @@
+ 	p->rt.on_rq		= 0;
+ 	p->rt.on_list		= 0;
+ 
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	/* Initialize Yat_Casched scheduling entity */
++	INIT_LIST_HEAD(&p->yat_casched.run_list);
++	p->yat_casched.vruntime = 0;
++	p->yat_casched.slice = 0;
++	p->yat_casched.last_cpu = -1;  /* 使用-1表示未初始化状态 */
++#endif
++
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+ 	INIT_HLIST_HEAD(&p->preempt_notifiers);
+ #endif
+@@ -7066,6 +7080,10 @@
+ 		p->sched_class = &dl_sched_class;
+ 	else if (rt_prio(prio))
+ 		p->sched_class = &rt_sched_class;
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	else if (yat_casched_policy(p->policy))
++		p->sched_class = &yat_casched_sched_class;
++#endif
+ 	else
+ 		p->sched_class = &fair_sched_class;
+ 
+@@ -7663,6 +7681,18 @@
+ 			goto req_priv;
+ 	}
+ 
++	/*
++	 * YAT_CASCHED policy: Allow priority changes without CAP_SYS_NICE
++	 * for same owner, similar to normal scheduling policies
++	 */
++	if (yat_casched_policy(policy)) {
++		/* Only check same owner for YAT_CASCHED */
++		if (!check_same_owner(p))
++			goto req_priv;
++		/* Skip other privilege checks for YAT_CASCHED */
++		goto skip_priv_checks;
++	}
++
+ 	/* Can't change other user's priorities: */
+ 	if (!check_same_owner(p))
+ 		goto req_priv;
+@@ -7671,6 +7701,8 @@
+ 	if (p->sched_reset_on_fork && !reset_on_fork)
+ 		goto req_priv;
+ 
++skip_priv_checks:
++
+ 	return 0;
+ 
+ req_priv:
+@@ -7714,12 +7746,19 @@
+ 	/*
+ 	 * Valid priorities for SCHED_FIFO and SCHED_RR are
+ 	 * 1..MAX_RT_PRIO-1, valid priority for SCHED_NORMAL,
+-	 * SCHED_BATCH and SCHED_IDLE is 0.
++	 * SCHED_BATCH, SCHED_IDLE is 0. SCHED_YAT_CASCHED allows 0-19.
+ 	 */
+ 	if (attr->sched_priority > MAX_RT_PRIO-1)
+ 		return -EINVAL;
+ 	if ((dl_policy(policy) && !__checkparam_dl(attr)) ||
+-	    (rt_policy(policy) != (attr->sched_priority != 0)))
++	    (rt_policy(policy) && attr->sched_priority == 0) ||
++	    (!rt_policy(policy) && !dl_policy(policy) && !yat_casched_policy(policy) && attr->sched_priority != 0))
++		return -EINVAL;
++
++	/*
++	 * YAT_CASCHED policy allows priority range 0-19
++	 */
++	if (yat_casched_policy(policy) && (attr->sched_priority < 0 || attr->sched_priority > 19))
+ 		return -EINVAL;
+ 
+ 	if (user) {
+@@ -9046,6 +9085,9 @@
+ 	case SCHED_NORMAL:
+ 	case SCHED_BATCH:
+ 	case SCHED_IDLE:
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	case SCHED_YAT_CASCHED:
++#endif
+ 		ret = 0;
+ 		break;
+ 	}
+@@ -9073,6 +9115,9 @@
+ 	case SCHED_NORMAL:
+ 	case SCHED_BATCH:
+ 	case SCHED_IDLE:
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	case SCHED_YAT_CASCHED:
++#endif
+ 		ret = 0;
+ 	}
+ 	return ret;
+@@ -9903,9 +9948,16 @@
+ 	int i;
+ 
+ 	/* Make sure the linker didn't screw up */
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++	BUG_ON(&idle_sched_class != &yat_casched_sched_class + 1 ||
++	       &yat_casched_sched_class != &fair_sched_class + 1 ||
++	       &fair_sched_class != &rt_sched_class + 1 ||
++	       &rt_sched_class   != &dl_sched_class + 1);
++#else
+ 	BUG_ON(&idle_sched_class != &fair_sched_class + 1 ||
+ 	       &fair_sched_class != &rt_sched_class + 1 ||
+ 	       &rt_sched_class   != &dl_sched_class + 1);
++#endif
+ #ifdef CONFIG_SMP
+ 	BUG_ON(&dl_sched_class != &stop_sched_class + 1);
+ #endif
+@@ -9972,6 +10024,10 @@
+ 		init_cfs_rq(&rq->cfs);
+ 		init_rt_rq(&rq->rt);
+ 		init_dl_rq(&rq->dl);
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++    printk("======init yat_casched rq======\n");
++    init_yat_casched_rq(&rq->yat_casched);
++#endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+ 		rq->tmp_alone_branch = &rq->leaf_cfs_rq_list;
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -20,6 +20,7 @@
+ #include <linux/sched/task_flags.h>
+ #include <linux/sched/task.h>
+ #include <linux/sched/topology.h>
++#include <linux/sched/yat_casched.h>
+ 
+ #include <linux/atomic.h>
+ #include <linux/bitmap.h>
+@@ -185,12 +186,22 @@
+ {
+ 	return policy == SCHED_DEADLINE;
+ }
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++static inline int yat_casched_policy(int policy)
++{
++    return policy == SCHED_YAT_CASCHED;
++}
++#endif
+ static inline bool valid_policy(int policy)
+ {
+-	return idle_policy(policy) || fair_policy(policy) ||
+-		rt_policy(policy) || dl_policy(policy);
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++    return idle_policy(policy) || fair_policy(policy) ||
++        rt_policy(policy) || dl_policy(policy) || yat_casched_policy(policy);
++#else
++    return idle_policy(policy) || fair_policy(policy) ||
++        rt_policy(policy) || dl_policy(policy);
++#endif
+ }
+-
+ static inline int task_has_idle_policy(struct task_struct *p)
+ {
+ 	return idle_policy(p->policy);
+@@ -1004,7 +1015,9 @@
+ 	unsigned int		ttwu_pending;
+ #endif
+ 	u64			nr_switches;
+-
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++    struct yat_casched_rq yat_casched;  // 添加这一行
++#endif
+ #ifdef CONFIG_UCLAMP_TASK
+ 	/* Utilization clamp values based on CPU's RUNNABLE tasks */
+ 	struct uclamp_rq	uclamp[UCLAMP_CNT] ____cacheline_aligned;

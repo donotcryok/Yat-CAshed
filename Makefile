@@ -11,14 +11,24 @@ REPORT_DIR := report/paper
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree
+.PHONY: help check docs-check verify-all simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree patch-check patch-apply patch-reverse patch-status patch-selftest kernel-setup
 
 help:
 	@echo "=========================================="
 	@echo " Yat-CAShed 顶层命令"
 	@echo "=========================================="
 	@echo "  make check             仓库健康检查（冲突标记/空文件/结构）"
+	@echo "  make docs-check        Markdown 相对链接检查（失效链接即失败）"
 	@echo "  make symbol-check      内核头文件/实现符号一致性检查（静态）"
+	@echo "  make verify-all        check + docs-check + symbol-check + 补丁自检 + 模拟器全套验证"
+	@echo ""
+	@echo "  make patch-check       校验内核补丁包完整性（SHA256 + hunk 数）"
+	@echo "  make patch-selftest    补丁 apply→比对→reverse→比对 往返测试"
+	@echo "  make patch-apply       把补丁应用到 linux-6.8-main/"
+	@echo "  make patch-reverse     从 linux-6.8-main/ 回退补丁"
+	@echo "  make patch-status      报告每个补丁的应用状态"
+	@echo "  make kernel-setup      从上游 v6.8 重建内核树（下载 + 打补丁）"
+	@echo ""
 	@echo "  make simulator-compile 仅编译 Java 模拟器"
 	@echo "  make simulator-test    运行模拟器单元测试（确定性核心逻辑）"
 	@echo "  make simulator         编译并运行完整模拟器实验（转发 simulator/Makefile）"
@@ -37,9 +47,38 @@ help:
 check:
 	@bash scripts/check_repo.sh
 
+# 文档健康检查：Markdown 相对链接必须指向真实文件
+docs-check:
+	@python3 scripts/check_docs.py
+
 # 内核头文件声明 vs 实现 符号一致性检查（静态，不修改源码）
 symbol-check:
 	@bash scripts/check_symbols.sh
+
+# 一键全量门禁（CI 等价的最小集合）
+verify-all: check docs-check symbol-check patch-check simulator-verify
+	@echo ">>> 全部门禁通过"
+
+# ---- 内核补丁包（替代 1.6GB 内核整树入库）----
+PATCH_DIR := patches
+
+patch-check:
+	@bash scripts/kernel-patch.sh --check
+
+patch-selftest:
+	@bash scripts/kernel-patch.sh --selftest --upstream "$${UPSTREAM:-/tmp/up}"
+
+patch-apply:
+	@bash scripts/kernel-patch.sh --apply
+
+patch-reverse:
+	@bash scripts/kernel-patch.sh --reverse
+
+patch-status:
+	@bash scripts/kernel-patch.sh --status
+
+kernel-setup:
+	@bash scripts/setup-kernel.sh
 
 # 模拟器（simulator/Makefile 现已跨平台）
 simulator:
@@ -60,9 +99,15 @@ simulator-verify:
 visualize:
 	@$(MAKE) -C $(SIM_DIR) picture
 
+# 论文编译：优先 latexmk（自动处理多次 xelatex），缺失时回退到手工两遍
 report:
-	@cd $(REPORT_DIR) && xelatex -interaction=nonstopmode Yat-CAShed.tex && \
-		xelatex -interaction=nonstopmode Yat-CAShed.tex
+	@cd $(REPORT_DIR) && \
+		if command -v latexmk >/dev/null 2>&1; then \
+			latexmk -xelatex -interaction=nonstopmode -halt-on-error Yat-CAShed.tex; \
+		else \
+			xelatex -interaction=nonstopmode -halt-on-error Yat-CAShed.tex && \
+			xelatex -interaction=nonstopmode -halt-on-error Yat-CAShed.tex; \
+		fi
 
 tree:
 	@find . -maxdepth 2 -not -path './.git*' -not -path './linux-6.8-main/*' | sort
