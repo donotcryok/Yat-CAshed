@@ -26,6 +26,11 @@ struct hlist_node;
 /* 加速表条目：存储(task,cpu)→benefit映射 */
 struct yat_accel_entry {
     struct hlist_node hash_node;   /* 哈希表节点 */
+    /*
+     * 仅供销毁/裁剪路径把「已从哈希表摘下的」条目串成临时链表，
+     * 以便把 kfree 推迟到释放 table->lock 之后。正常查找永远不会碰它。
+     */
+    struct list_head lru_list;
     pid_t task_pid;                /* 任务PID */
     int job_id;                    /* 作业ID (兼容性) */
     int cpu_id;                    /* CPU编号 */
@@ -56,6 +61,13 @@ struct yat_cpu_history_table {
     spinlock_t lock;               /* 该CPU历史表的锁 */
     u64 last_cleanup_time;         /* 上次清理时间 */
     struct list_head time_list;    /* 时间链表 */
+    /*
+     * 链表长度。用于在插入路径上做软限流（见 yat_add_history_record）：
+     * 原实现只增不删，一次长时间压测下来每条链表可以涨到几十万条，
+     * 而 yat_get_task_last_timestamp()/yat_sum_exec_time_since() 每次
+     * 都要全链表扫描 —— 持锁线性扫描 = 调度器 O(n) 抖动。
+     */
+    unsigned int nr_records;
 };
 
 /* 历史记录条目：基于链表的历史表实现 */
@@ -95,7 +107,12 @@ struct yat_job {
     enum yat_job_state state;      /* 作业状态 */
     int pending_predecessors;      /* 待完成的前驱作业数 */
     u64 wcet;                      /* 最坏情况执行时间 */
-    u64 per_cpu_last_ts[NR_CPUS];  /* 每个CPU的最后时间戳 */
+    /*
+     * 原 per_cpu_last_ts[NR_CPUS] 已删除：它是纯写字段（三处写入、零处读取），
+     * 却让每个 struct yat_job 常驻 NR_CPUS * 8 字节（64 核即 512B）。
+     * "某 CPU 上该作业最后出现的时间" 统一由 global_history_tables[cpu]
+     * 的链表查询得出（yat_get_task_last_timestamp），单一事实来源。
+     */
     struct yat_dag_task *dag;      /* 所属DAG */
     struct task_struct *task;      /* 关联的任务 */
 };
@@ -119,10 +136,15 @@ struct yat_casched_rq {
     u64 cache_decay_jiffies;       /* 缓存衰减时间 */
     spinlock_t history_lock;       /* 历史表锁 */
     
-    /* 全局调度结构 */
+    /* 全局调度结构（指向全 CPU 共享实例，不拥有所有权） */
     struct yat_ready_job_pool *ready_pool;            /* 就绪作业池 */
     struct yat_accel_table *accel_table;              /* 加速表 */
-    struct yat_cpu_history_table history_tables[NR_CPUS]; /* CPU历史表 */
+    /*
+     * 原实现内嵌了 history_tables[NR_CPUS]，即每个 rq 都持有一整套
+     * NR_CPUS 张历史表 —— 而真正被使用的始终是全局的 global_history_tables，
+     * 这份内嵌副本只在 rq_offline 里被销毁，纯属 NR_CPUS² 的内存浪费
+     * （64 核约 64*(2*8+32+16) ≈ 40KB+rq）。已删除，历史表只保留全局一份。
+     */
 };
 
 struct rq;
