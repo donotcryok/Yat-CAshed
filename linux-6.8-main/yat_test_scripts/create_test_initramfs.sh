@@ -7,13 +7,19 @@
 #     1) 扫描 boot_test_scripts/ 下实际存在的 *.c，逐个编译；
 #     2) 只把编译成功的可执行文件打进 initramfs；
 #     3) 一个可执行文件都没有时报错退出（避免产出空壳环境）。
+#
+# 目录约定（A7 测试体系统一）：
+#   boot_test_scripts/  只放 C 源码，**绝不允许**出现编译产物。
+#   因此本脚本把可执行文件编译到独立的 BUILD_DIR，
+#   而不是像早期版本那样写成 "$BOOT_DIR/$name"（那会把二进制撒进源码目录）。
 
 set -euo pipefail
 
 KERNEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$KERNEL_DIR"
 
-BOOT_DIR="boot_test_scripts"
+BOOT_DIR="boot_test_scripts"          # 只读：C 源码
+BUILD_DIR="test_with_programs_build"  # 只写：编译产物，已被 .gitignore 覆盖
 OUT_DIR="test_with_programs_initramfs"
 OUT_IMAGE="test_with_programs.cpio.gz"
 
@@ -42,11 +48,12 @@ fi
 # ---------------------------------------------------------------
 echo ""
 echo "🔧 编译测试程序..."
+mkdir -p "$BUILD_DIR"
 programs=()
 shopt -s nullglob
 for src in "$BOOT_DIR"/*.c; do
     name="$(basename "$src" .c)"
-    bin="$BOOT_DIR/$name"
+    bin="$BUILD_DIR/$name"
     echo "  - 编译 $name ..."
     if gcc -O2 -static -o "$bin" "$src"; then
         programs+=("$name")
@@ -77,7 +84,7 @@ cp /bin/busybox "$OUT_DIR/bin/"
 chmod +x "$OUT_DIR/bin/busybox"
 
 for name in "${programs[@]}"; do
-    cp "$BOOT_DIR/$name" "$OUT_DIR/bin/"
+    cp "$BUILD_DIR/$name" "$OUT_DIR/bin/"
     chmod +x "$OUT_DIR/bin/$name"
 done
 
@@ -125,5 +132,11 @@ echo ""
 echo "启动方式："
 echo "  cd $KERNEL_DIR/yat_test_scripts && ./start_test_environment.sh"
 echo "  或手工："
-echo "  qemu-system-x86_64 -nographic -m 1024 -kernel vmlinux \\"
-echo "      -initrd $OUT_IMAGE -append \"console=ttyS0,115200 noapic nolapic acpi=off\" -accel tcg"
+# 注意两点（曾在实跑中踩到）：
+#   1) -kernel 必须指向 arch/x86/boot/bzImage；ELF 的 vmlinux 缺少 Xen PVH note，
+#      QEMU 会报 "Error loading uncompressed kernel without PVH ELF Note"。
+#   2) 不要加 acpi=off / noapic / nolapic：-kernel bzImage 绕过 BIOS，
+#      AP 只能靠 ACPI MADT 枚举，关掉 ACPI 后 guest 会退化成 1 个 CPU。
+echo "  qemu-system-x86_64 -nographic -m 1024 -smp 4 \\"
+echo "      -kernel arch/x86/boot/bzImage \\"
+echo "      -initrd $OUT_IMAGE -append \"console=ttyS0,115200 panic=1 nokaslr\" -accel tcg"

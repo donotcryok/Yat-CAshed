@@ -11,7 +11,7 @@ REPORT_DIR := report/paper
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check docs-check verify-all simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree patch-check patch-apply patch-reverse patch-status patch-selftest kernel-setup
+.PHONY: help check docs-check verify-all simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree patch-check patch-apply patch-reverse patch-status patch-selftest kernel-setup kernel-obj kernel-build kernel-bench kernel-compare
 
 help:
 	@echo "=========================================="
@@ -39,7 +39,12 @@ help:
 	@echo "  make tree              打印项目结构"
 	@echo "  make clean             清理各模块构建产物"
 	@echo ""
-	@echo "  内核编译： cd linux-6.8-main && make kernel/sched/yat_casched.o"
+	@echo "  ---- 真实内核 ----"
+	@echo "  make kernel-obj        只编译调度器目标文件（最快的语法/类型检查）"
+	@echo "  make kernel-build      全量编译内核（产出 bzImage）"
+	@echo "  make kernel-bench      仅构建 CFS vs Yat 基准程序（不启动 QEMU）"
+	@echo "  make kernel-compare    QEMU 内跑同一负载，CFS vs Yat 自动出 CSV"
+	@echo ""
 	@echo "  测试环境： cd linux-6.8-main/yat_test_scripts && ./start_test_environment.sh"
 	@echo "=========================================="
 
@@ -79,6 +84,27 @@ patch-status:
 
 kernel-setup:
 	@bash scripts/setup-kernel.sh
+
+# ---- 真实内核（linux-6.8-main/）----
+# 目标文件级别的编译是最便宜的正确性闸门：它能在秒级暴露头文件、
+# 类型、宏展开问题，而不必等全量链接。
+KERNEL_DIR := linux-6.8-main
+
+kernel-obj:
+	@$(MAKE) -C $(KERNEL_DIR) kernel/sched/yat_casched.o
+
+kernel-build:
+	@$(MAKE) -C $(KERNEL_DIR) -j"$$(nproc)"
+
+# 只编译基准程序，用于快速确认用户态代码没被改坏（无需内核）。
+kernel-bench:
+	@gcc -O2 -static -Wall -Wextra \
+		-o /tmp/yat_bench $(KERNEL_DIR)/boot_test_scripts/yat_bench.c
+	@echo ">>> /tmp/yat_bench 构建完成"
+
+# 同一负载、同一 CPU，只改调度策略；两次 QEMU 启动各自从干净状态开始。
+kernel-compare:
+	@cd $(KERNEL_DIR)/yat_test_scripts && ./compare_cfs_vs_yat.sh
 
 # 模拟器（simulator/Makefile 现已跨平台）
 simulator:

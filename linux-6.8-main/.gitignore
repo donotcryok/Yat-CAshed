@@ -47,6 +47,12 @@
 # 曾导致本仓库 1326 个 .S 汇编源文件全部未入库，vmlinux 无法链接。
 # 显式否定之，见 docs/CONFLICT_ANALYSIS.md §8.5。
 !*.S
+# 上面 !*.S 会让开头的 `.*` 规则对以点开头的 .S 失效，于是 kallsyms 的
+# 临时汇编产物（script/kallsyms.c 生成的 .tmp_vmlinux.kallsymsN.S）会出现在
+# git status 里。gitignore 是后者覆盖前者，故在其后单独压回。
+# 注意这里只压 .tmp_ 前缀，不影响任何真实的 .S 源文件。
+.tmp_*.syms
+.tmp_*.S
 *.so
 *.so.dbg
 *.su
@@ -201,8 +207,24 @@ sphinx_*/
 /test_chroot/lib/
 /test_chroot/lib64/
 /yat_simple_test_env/initramfs/bin/
+/yat_simple_test_env/build/
+/yat_simple_test_env/*.cpio.gz
+/yat_simple_test_env/*.log
+#### test_with_programs_* 是 create_test_initramfs.sh 的临时目录
+####   _build/     —— 编译产物（二进制），保证 boot_test_scripts/ 物理上只有 .c
+####   _initramfs/ —— cpio 归档用的目录树
+/test_with_programs_build/
+/test_with_programs_initramfs/
+/test_with_programs.cpio.gz
+
+# QEMU 对比实验产物（compare_cfs_vs_yat.sh）
+/yat_test_scripts/results/
+/yat_test_scripts/*.log
 
 # Compiled user-space test programs
+# 约定：boot_test_scripts/ 只放 C 源码，编译产物（与 .c 同名的可执行文件）一律不入库。
 /boot_test_scripts/yat_simple_test
+/boot_test_scripts/yat_bench
+### 注意：yat_bench 是二进制的名字，yat_bench.c 是源码，二者不同名文件互不影响。
 /test_visualization/debug_scheduler
 /test_visualization/performance_test
