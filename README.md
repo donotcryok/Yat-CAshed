@@ -21,8 +21,9 @@ Yat-CAShed 基于 AJLR（Allocation of parallel Jobs based on Learned cache Rece
 
 - 🌐 **在线主页**：<https://donotcryok.github.io/Yat-CAShed/>（源码见 [`docs/index.html`](docs/index.html)）
   内容：项目定位、决策链路、实测结果、快速开始与文档导航。
-  GitHub Pages 的 Source 设为 `main` 分支的 `/docs` 目录即可发布（`docs/.nojekyll` 已就位，
-  不启用 Jekyll，页面为纯静态单文件、无外部依赖）。
+  **首次使用需在仓库 Settings → Pages 把 Source 设为 `main` 分支的 `/docs` 目录**
+  （仓库内已放好 `docs/.nojekyll`，不启用 Jekyll；页面是纯静态单文件、无外部字体/CDN，
+  也可直接下载后用浏览器打开 `docs/index.html` 预览）。
 
 ## 文档导航
 

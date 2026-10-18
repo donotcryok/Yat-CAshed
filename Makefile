@@ -11,7 +11,7 @@ REPORT_DIR := report/paper
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check docs-check name-check verify-all simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree patch-check patch-apply patch-reverse patch-status patch-selftest kernel-setup kernel-obj kernel-build kernel-bench kernel-compare
+.PHONY: help check docs-check name-check verify-all simulator simulator-compile simulator-quick simulator-verify simulator-test symbol-check visualize report clean tree homepage patch-check patch-apply patch-reverse patch-status patch-selftest kernel-setup kernel-obj kernel-build kernel-bench kernel-compare
 
 help:
 	@echo "=========================================="
@@ -38,6 +38,7 @@ help:
 	@echo "  make visualize         生成模拟器可视化图表"
 	@echo "  make report            编译 LaTeX 论文（需 xelatex）"
 	@echo "  make tree              打印项目结构"
+	@echo "  make homepage          本地预览项目主页（http://localhost:8000）"
 	@echo "  make clean             清理各模块构建产物"
 	@echo ""
 	@echo "  ---- 真实内核 ----"
@@ -143,6 +144,12 @@ report:
 
 tree:
 	@find . -maxdepth 2 -not -path './.git*' -not -path './linux-6.8-main/*' | sort
+
+# 本地预览项目主页：docs/ 下有 index.html + .nojekyll，直接起静态服务即可。
+# GitHub Pages 发布时把 Source 设为 main /docs，无需任何构建步骤。
+homepage:
+	@echo ">>> http://localhost:8000（Ctrl+C 结束）"
+	@python3 -m http.server 8000 --directory docs
 
 clean:
 	@echo ">>> 清理模拟器产物..."

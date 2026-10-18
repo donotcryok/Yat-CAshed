@@ -153,6 +153,33 @@
       原因是 O(nr_cpus²) 的 recency 扫描、每次 O(n) 的 pick 扫描，以及 TCG 模拟放大的切换成本。
       一次「按需抢占」的优化经 3 次重复取中位数后被数据否决并已回退，记录在路线图的 A8.2 节。
     </div>
+
+    <!-- 内联 SVG：不引入任何二进制资产，随页面一起纳入版本管理 -->
+    <figure style="margin:26px 0 0">
+      <svg viewBox="0 0 640 170" width="100%" height="auto" role="img"
+           aria-label="CFS 与 Yat-CAShed 的 8 任务总墙钟对比约 1.70 秒对 3.30 秒，AJLR 接管率 98%">
+        <g font-size="13" fill="var(--muted)">
+          <text x="0" y="16">8 任务总墙钟 sum_wall（同负载、同内核，仅改调度策略）</text>
+
+          <text x="0" y="56">CFS</text>
+          <rect x="64" y="42" width="220" height="20" rx="5" fill="var(--accent2)"></rect>
+          <text x="294" y="57" fill="var(--fg)">1.70 s</text>
+
+          <text x="0" y="98">Yat</text>
+          <rect x="64" y="84" width="427" height="20" rx="5" fill="var(--warn)"></rect>
+          <text x="501" y="99" fill="var(--fg)">3.30 s（≈1.94×）</text>
+
+          <text x="0" y="140">AJLR 接管率</text>
+          <rect x="64" y="126" width="427" height="18" rx="5" fill="var(--line)"></rect>
+          <rect x="64" y="126" width="418" height="18" rx="5" fill="var(--ok)"></rect>
+          <text x="330" y="140" fill="#06121a" font-weight="700">98%（925 命中 / 0 否决 / 14 未决策）</text>
+        </g>
+      </svg>
+      <figcaption style="color:var(--muted); font-size:13px; margin-top:8px">
+        单次运行的示意值；TCG 纯软件模拟下 sum_wall 重复 3 次可有 ±10% 波动，
+        结论以中位数与路线图 A8.2 的重复测量为准。
+      </figcaption>
+    </figure>
   </div>
 </section>
 
