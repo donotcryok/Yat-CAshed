@@ -40,24 +40,29 @@ UPSTREAM_FILES=(
 )
 
 # 新增文件（上游不存在）。二进制/生成物不入补丁。
+#
+# 目录约定（A7）：boot_test_scripts/ 只放 C 源码，脚本一律在 yat_test_scripts/。
 NEW_FILES=(
   include/linux/sched/yat_casched.h
+  include/trace/events/yat_casched.h
   kernel/sched/yat_casched.c
   initramfs/init
   initramfs_fixed/init
   yat_simple_test_env/initramfs/init
   boot_test_scripts/README.md
   boot_test_scripts/SIMPLE_TEST_README.md
-  boot_test_scripts/build_yat_simple_test.sh
-  boot_test_scripts/start_yat_simple_test.sh
+  boot_test_scripts/yat_bench.c
   boot_test_scripts/yat_simple_test.c
   yat_test_scripts/README.md
+  yat_test_scripts/build_yat_simple_test.sh
+  yat_test_scripts/compare_cfs_vs_yat.sh
   yat_test_scripts/create_test_initramfs.sh
   yat_test_scripts/manual_test_guide.sh
   yat_test_scripts/quick_test_guide.sh
   yat_test_scripts/start_qemu_simple.sh
   yat_test_scripts/start_qemu_yat_test.sh
   yat_test_scripts/start_test_environment.sh
+  yat_test_scripts/start_yat_simple_test.sh
   test_visualization/README.md
   test_visualization/debug_scheduler.c
   test_visualization/performance_test.c
@@ -138,6 +143,7 @@ make_patch() { # $1=文件名 $2=标题 $3...=路径列表（前缀 N: 表示新
 make_patch 0001-sched-yat-casched-core.patch \
   "sched: add YAT_CASCHED cache-aware scheduling class (core)" \
   N:include/linux/sched/yat_casched.h \
+  N:include/trace/events/yat_casched.h \
   N:kernel/sched/yat_casched.c
 
 make_patch 0002-sched-yat-casched-integration.patch \
@@ -161,22 +167,24 @@ make_patch 0004-kernel-gitignore.patch \
   .gitignore
 
 make_patch 0005-test-env.patch \
-  "test: add Yat QEMU boot/test environments and visualization" \
+  "test: add Yat QEMU boot/test environments and CFS-vs-Yat benchmark" \
   N:initramfs/init \
   N:initramfs_fixed/init \
   N:yat_simple_test_env/initramfs/init \
   N:boot_test_scripts/README.md \
   N:boot_test_scripts/SIMPLE_TEST_README.md \
-  N:boot_test_scripts/build_yat_simple_test.sh \
-  N:boot_test_scripts/start_yat_simple_test.sh \
+  N:boot_test_scripts/yat_bench.c \
   N:boot_test_scripts/yat_simple_test.c \
   N:yat_test_scripts/README.md \
+  N:yat_test_scripts/build_yat_simple_test.sh \
+  N:yat_test_scripts/compare_cfs_vs_yat.sh \
   N:yat_test_scripts/create_test_initramfs.sh \
   N:yat_test_scripts/manual_test_guide.sh \
   N:yat_test_scripts/quick_test_guide.sh \
   N:yat_test_scripts/start_qemu_simple.sh \
   N:yat_test_scripts/start_qemu_yat_test.sh \
   N:yat_test_scripts/start_test_environment.sh \
+  N:yat_test_scripts/start_yat_simple_test.sh \
   N:test_visualization/README.md \
   N:test_visualization/debug_scheduler.c \
   N:test_visualization/performance_test.c \
@@ -207,11 +215,11 @@ cat > "${OUT}/README.md" <<'EOF'
 | 文件 | 内容 |
 | --- | --- |
 | `series` | 应用顺序（6 个补丁） |
-| `0001-sched-yat-casched-core.patch` | 新增 `kernel/sched/yat_casched.c`（1405 行）与 `include/linux/sched/yat_casched.h` |
+| `0001-sched-yat-casched-core.patch` | 新增 `kernel/sched/yat_casched.c`（含 A6 的 tracepoint 与 debugfs）与 `include/linux/sched/yat_casched.h`、`include/trace/events/yat_casched.h` |
 | `0002-sched-yat-casched-integration.patch` | 调度类接入：`core.c` / `sched.h` / `uapi/sched.h` / `init/main.c` / `init/Kconfig` / `init/init_task.c` / `kernel/sched/Makefile` / `vmlinux.lds.h` |
 | `0003-x86-realmode-tolerate-missing-trampoline.patch` | `arch/x86/realmode/init.c`：trampoline 分配失败时降级而非 panic |
-| `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物 |
-| `0005-test-env.patch` | `boot_test_scripts/`、`yat_test_scripts/`、`test_visualization/`、三个 `initramfs/init` |
+| `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物（含 `test_with_programs_build/`、`yat_test_scripts/results/`） |
+| `0005-test-env.patch` | `boot_test_scripts/`（**只含 C 源码**：`yat_simple_test.c`、`yat_bench.c`）、`yat_test_scripts/`（**只含脚本**：含 `compare_cfs_vs_yat.sh`）、`test_visualization/`、三个 `initramfs/init` |
 | `0006-docs.patch` | `Yat_Casched开发文档.md`、`yat_casched优化记录.md` |
 
 > 二进制产物（`test_visualization/img/*.png`）与编译产物（`*.o`、`vmlinux`）

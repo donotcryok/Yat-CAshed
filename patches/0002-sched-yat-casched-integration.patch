@@ -4,26 +4,53 @@ Upstream: linux v6.8 (torvalds)
 
 --- a/include/asm-generic/vmlinux.lds.h
 +++ b/include/asm-generic/vmlinux.lds.h
-@@ -131,6 +131,7 @@
+@@ -123,7 +123,20 @@
+  * The order of the sched class addresses are important, as they are
+  * used to determine the order of the priority of each sched class in
+  * relation to each other.
++ *
++ * NOTE: the Yat_CASched class is only emitted when it is configured in.
++ * Keeping the slot conditional means an ordering mistake can only ever
++ * come from an explicit edit of this file, and sched_init() re-checks the
++ * resulting order at boot (see kernel/sched/core.c) so a mistake panics
++ * with a message instead of silently mis-prioritising.
+  */
++#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
++#define YAT_CASCHED_SCHED_CLASS			\
++	*(__yat_casched_sched_class)
++#else
++#define YAT_CASCHED_SCHED_CLASS
++#endif
++
+ #define SCHED_DATA				\
+ 	STRUCT_ALIGN();				\
+ 	__sched_class_highest = .;		\
+@@ -131,6 +144,7 @@
  	*(__dl_sched_class)			\
  	*(__rt_sched_class)			\
  	*(__fair_sched_class)			\
-+	 *(__yat_casched_sched_class) \
++	YAT_CASCHED_SCHED_CLASS			\
  	*(__idle_sched_class)			\
  	__sched_class_lowest = .;
  
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -46,7 +46,7 @@
+@@ -46,7 +46,13 @@
  #include <linux/livepatch_sched.h>
  #include <linux/uidgid_types.h>
  #include <asm/kmap_size.h>
 -
-+#include<linux/sched/yat_casched.h>
++/*
++ * Yat_CASched: struct sched_yat_casched_entity is embedded in task_struct
++ * below, so the full definition (not just a forward declaration) must be
++ * visible here. kernel/sched/sched.h includes the same header, which is
++ * harmless because it is guarded, but this is the only *required* site.
++ */
++#include <linux/sched/yat_casched.h>
  /* task_struct member predeclarations (sorted alphabetically): */
  struct audit_context;
  struct bio_list;
-@@ -797,6 +797,9 @@
+@@ -797,6 +803,9 @@
  	struct sched_entity		se;
  	struct sched_rt_entity		rt;
  	struct sched_dl_entity		dl;
@@ -48,16 +75,35 @@ Upstream: linux v6.8 (torvalds)
  
 --- a/init/Kconfig
 +++ b/init/Kconfig
-@@ -1993,7 +1993,11 @@
+@@ -849,6 +849,23 @@
+ 
+ 	  If in doubt, use the default value.
+ 
++config SCHED_CLASS_YAT_CASCHED
++	bool "Yat_CASched cache-aware scheduling class"
++	depends on SMP
++	default n
++	help
++	  Enable the Yat_CASched scheduling class (SCHED_YAT_CASCHED, policy
++	  number 8), an experimental cache-aware scheduling class built around
++	  job/DAG level placement instead of per-task placement.
++
++	  The class is inserted into the sched_class chain between fair and
++	  idle. Enabling it lets tasks opt in with
++	  sched_setscheduler(..., SCHED_YAT_CASCHED, ...); ordinary
++	  SCHED_OTHER/SCHED_FIFO tasks keep using the stock classes.
++
++	  This is research code: there is no upstream support for it, and it is
++	  not tested against every architecture. If in doubt, say N.
++
+ endmenu
+ 
+ #
+@@ -1993,7 +2010,6 @@
  
  config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
  	bool
 -
-+config SCHED_CLASS_YAT_CASCHED
-+	bool "YAT_CASCHED(Cache Awareness) sched class"
-+	default n
-+	help
-+	  A scheduling mechanism based on cache awareness.
  # It may be useful for an architecture to override the definitions of the
  # SYSCALL_DEFINE() and __SYSCALL_DEFINEx() macros in <linux/syscalls.h>
  # and the COMPAT_ variants in <linux/compat.h>, in particular to use a
@@ -242,14 +288,23 @@ Upstream: linux v6.8 (torvalds)
  		ret = 0;
  	}
  	return ret;
-@@ -9903,9 +9948,16 @@
+@@ -9903,9 +9948,25 @@
  	int i;
  
  	/* Make sure the linker didn't screw up */
 +#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
-+	BUG_ON(&idle_sched_class != &yat_casched_sched_class + 1 ||
-+	       &yat_casched_sched_class != &fair_sched_class + 1 ||
-+	       &fair_sched_class != &rt_sched_class + 1 ||
++	/*
++	 * The Yat_CASched class is injected into SCHED_DATA between fair and
++	 * idle. If that placement is ever broken the class priority order
++	 * silently inverts, and the resulting symptoms (tasks never running,
++	 * or idle losing to a normal task) are extremely hard to trace back
++	 * to the linker script. Fail loudly, naming the offending neighbour.
++	 */
++	if (unlikely(&yat_casched_sched_class != &fair_sched_class + 1))
++		panic("sched: Yat_CASched sched_class must directly FOLLOW fair_sched_class; check YAT_CASCHED_SCHED_CLASS placement in SCHED_DATA (include/asm-generic/vmlinux.lds.h)\n");
++	if (unlikely(&idle_sched_class != &yat_casched_sched_class + 1))
++		panic("sched: Yat_CASched sched_class must directly PRECEDE idle_sched_class; check YAT_CASCHED_SCHED_CLASS placement in SCHED_DATA (include/asm-generic/vmlinux.lds.h)\n");
++	BUG_ON(&fair_sched_class != &rt_sched_class + 1 ||
 +	       &rt_sched_class   != &dl_sched_class + 1);
 +#else
  	BUG_ON(&idle_sched_class != &fair_sched_class + 1 ||
@@ -259,13 +314,19 @@ Upstream: linux v6.8 (torvalds)
  #ifdef CONFIG_SMP
  	BUG_ON(&dl_sched_class != &stop_sched_class + 1);
  #endif
-@@ -9972,6 +10024,10 @@
+@@ -9972,6 +10033,16 @@
  		init_cfs_rq(&rq->cfs);
  		init_rt_rq(&rq->rt);
  		init_dl_rq(&rq->dl);
 +#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
-+    printk("======init yat_casched rq======\n");
-+    init_yat_casched_rq(&rq->yat_casched);
++		/*
++		 * 每个 CPU 只初始化本 rq 的字段；全局结构（就绪池、加速表、
++		 * 默认 DAG、历史表）由 init_yat_casched_rq() 内部的
++		 * yat_global_init_once() 保证只构建一次。这里不能有 printk：
++		 * sched_init() 在 for_each_possible_cpu() 里跑，NR_CPUS 行日志
++		 * 会污染启动时序且毫无信息量。
++		 */
++		init_yat_casched_rq(&rq->yat_casched);
 +#endif
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);

@@ -8,11 +8,11 @@
 | 文件 | 内容 |
 | --- | --- |
 | `series` | 应用顺序（6 个补丁） |
-| `0001-sched-yat-casched-core.patch` | 新增 `kernel/sched/yat_casched.c`（1405 行）与 `include/linux/sched/yat_casched.h` |
+| `0001-sched-yat-casched-core.patch` | 新增 `kernel/sched/yat_casched.c`（含 A6 的 tracepoint 与 debugfs）与 `include/linux/sched/yat_casched.h`、`include/trace/events/yat_casched.h` |
 | `0002-sched-yat-casched-integration.patch` | 调度类接入：`core.c` / `sched.h` / `uapi/sched.h` / `init/main.c` / `init/Kconfig` / `init/init_task.c` / `kernel/sched/Makefile` / `vmlinux.lds.h` |
 | `0003-x86-realmode-tolerate-missing-trampoline.patch` | `arch/x86/realmode/init.c`：trampoline 分配失败时降级而非 panic |
-| `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物 |
-| `0005-test-env.patch` | `boot_test_scripts/`、`yat_test_scripts/`、`test_visualization/`、三个 `initramfs/init` |
+| `0004-kernel-gitignore.patch` | 内核树 `.gitignore`：修复 `*.s` 误伤 `.S`、`tags` 误伤源码目录，追加测试产物（含 `test_with_programs_build/`、`yat_test_scripts/results/`） |
+| `0005-test-env.patch` | `boot_test_scripts/`（**只含 C 源码**：`yat_simple_test.c`、`yat_bench.c`）、`yat_test_scripts/`（**只含脚本**：含 `compare_cfs_vs_yat.sh`）、`test_visualization/`、三个 `initramfs/init` |
 | `0006-docs.patch` | `Yat_Casched开发文档.md`、`yat_casched优化记录.md` |
 
 > 二进制产物（`test_visualization/img/*.png`）与编译产物（`*.o`、`vmlinux`）

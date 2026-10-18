@@ -4,7 +4,7 @@ Upstream: linux v6.8 (torvalds)
 
 --- /dev/null
 +++ b/include/linux/sched/yat_casched.h
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,221 @@
 +#ifndef _LINUX_SCHED_YAT_CASCHED_H
 +#define _LINUX_SCHED_YAT_CASCHED_H
 +
@@ -33,6 +33,11 @@ Upstream: linux v6.8 (torvalds)
 +/* 加速表条目：存储(task,cpu)→benefit映射 */
 +struct yat_accel_entry {
 +    struct hlist_node hash_node;   /* 哈希表节点 */
++    /*
++     * 仅供销毁/裁剪路径把「已从哈希表摘下的」条目串成临时链表，
++     * 以便把 kfree 推迟到释放 table->lock 之后。正常查找永远不会碰它。
++     */
++    struct list_head lru_list;
 +    pid_t task_pid;                /* 任务PID */
 +    int job_id;                    /* 作业ID (兼容性) */
 +    int cpu_id;                    /* CPU编号 */
@@ -63,6 +68,13 @@ Upstream: linux v6.8 (torvalds)
 +    spinlock_t lock;               /* 该CPU历史表的锁 */
 +    u64 last_cleanup_time;         /* 上次清理时间 */
 +    struct list_head time_list;    /* 时间链表 */
++    /*
++     * 链表长度。用于在插入路径上做软限流（见 yat_add_history_record）：
++     * 原实现只增不删，一次长时间压测下来每条链表可以涨到几十万条，
++     * 而 yat_get_task_last_timestamp()/yat_sum_exec_time_since() 每次
++     * 都要全链表扫描 —— 持锁线性扫描 = 调度器 O(n) 抖动。
++     */
++    unsigned int nr_records;
 +};
 +
 +/* 历史记录条目：基于链表的历史表实现 */
@@ -102,7 +114,12 @@ Upstream: linux v6.8 (torvalds)
 +    enum yat_job_state state;      /* 作业状态 */
 +    int pending_predecessors;      /* 待完成的前驱作业数 */
 +    u64 wcet;                      /* 最坏情况执行时间 */
-+    u64 per_cpu_last_ts[NR_CPUS];  /* 每个CPU的最后时间戳 */
++    /*
++     * 原 per_cpu_last_ts[NR_CPUS] 已删除：它是纯写字段（三处写入、零处读取），
++     * 却让每个 struct yat_job 常驻 NR_CPUS * 8 字节（64 核即 512B）。
++     * "某 CPU 上该作业最后出现的时间" 统一由 global_history_tables[cpu]
++     * 的链表查询得出（yat_get_task_last_timestamp），单一事实来源。
++     */
 +    struct yat_dag_task *dag;      /* 所属DAG */
 +    struct task_struct *task;      /* 关联的任务 */
 +};
@@ -126,10 +143,15 @@ Upstream: linux v6.8 (torvalds)
 +    u64 cache_decay_jiffies;       /* 缓存衰减时间 */
 +    spinlock_t history_lock;       /* 历史表锁 */
 +    
-+    /* 全局调度结构 */
++    /* 全局调度结构（指向全 CPU 共享实例，不拥有所有权） */
 +    struct yat_ready_job_pool *ready_pool;            /* 就绪作业池 */
 +    struct yat_accel_table *accel_table;              /* 加速表 */
-+    struct yat_cpu_history_table history_tables[NR_CPUS]; /* CPU历史表 */
++    /*
++     * 原实现内嵌了 history_tables[NR_CPUS]，即每个 rq 都持有一整套
++     * NR_CPUS 张历史表 —— 而真正被使用的始终是全局的 global_history_tables，
++     * 这份内嵌副本只在 rq_offline 里被销毁，纯属 NR_CPUS² 的内存浪费
++     * （64 核约 64*(2*8+32+16) ≈ 40KB+rq）。已删除，历史表只保留全局一份。
++     */
 +};
 +
 +struct rq;
@@ -205,8 +227,195 @@ Upstream: linux v6.8 (torvalds)
 +
 +#endif /* _LINUX_SCHED_YAT_CASCHED_H */
 --- /dev/null
++++ b/include/trace/events/yat_casched.h
+@@ -0,0 +1,184 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#undef TRACE_SYSTEM
++#define TRACE_SYSTEM yat_casched
++
++#if !defined(_TRACE_YAT_CASCHED_H) || defined(TRACE_HEADER_MULTI_READ)
++#define _TRACE_YAT_CASCHED_H
++
++#include <linux/tracepoint.h>
++
++/*
++ * Yat_CASched 可观测性接口
++ *
++ * 为什么必须用 tracepoint 而不是 printk：
++ *   调度类的 enqueue/dequeue/pick_next_task/balance 全部跑在持 rq_lock、
++ *   可能关中断的上下文里。printk 会同步写控制台、可能触发唤醒与 sleep，
++ *   在高频路径上既违反「原子上下文不得睡眠」的约束，又会因为偷走 CPU
++ *   时间而系统性改变被测调度行为（观察者效应）。tracepoint 在未启用时
++ *   只多一次静态分支判断，启用后写入 per-CPU 环形缓冲区，不做同步 I/O。
++ *
++ * 查看方式：
++ *   cd /sys/kernel/tracing
++ *   echo 1 > events/yat_casched/enable
++ *   cat trace_pipe
++ * 或用 perf / trace-cmd 采集后离线分析（A7 的 CFS vs Yat 对比即基于此）。
++ */
++
++/*
++ * 作业被投入就绪池。
++ * @pid:      关联任务的 pid（无关联任务时为 0）
++ * @job_id:   作业 ID
++ * @prio:     作业优先级（数值越小越优先）
++ * @nr_jobs:  入队后就绪池中的作业数
++ */
++TRACE_EVENT(yat_casched_enqueue,
++
++	TP_PROTO(int pid, int job_id, int prio, int nr_jobs),
++
++	TP_ARGS(pid, job_id, prio, nr_jobs),
++
++	TP_STRUCT__entry(
++		__field(int, pid)
++		__field(int, job_id)
++		__field(int, prio)
++		__field(int, nr_jobs)
++	),
++
++	TP_fast_assign(
++		__entry->pid		= pid;
++		__entry->job_id		= job_id;
++		__entry->prio		= prio;
++		__entry->nr_jobs	= nr_jobs;
++	),
++
++	TP_printk("pid=%d job_id=%d prio=%d nr_jobs=%d",
++		  __entry->pid, __entry->job_id, __entry->prio,
++		  __entry->nr_jobs)
++);
++
++/*
++ * 作业被从就绪池取出准备分配。
++ */
++TRACE_EVENT(yat_casched_dequeue,
++
++	TP_PROTO(int pid, int job_id, int nr_jobs),
++
++	TP_ARGS(pid, job_id, nr_jobs),
++
++	TP_STRUCT__entry(
++		__field(int, pid)
++		__field(int, job_id)
++		__field(int, nr_jobs)
++	),
++
++	TP_fast_assign(
++		__entry->pid		= pid;
++		__entry->job_id		= job_id;
++		__entry->nr_jobs	= nr_jobs;
++	),
++
++	TP_printk("pid=%d job_id=%d nr_jobs=%d",
++		  __entry->pid, __entry->job_id, __entry->nr_jobs)
++);
++
++/*
++ * AJLR 为一个作业选出目标核心。
++ * @job_id:   作业 ID
++ * @cpu:      被选中的核心
++ * @benefit:  该核心上的缓存收益估算
++ * @crp_ratio: CRP 比率（千分比，避免浮点）
++ * @wcet:     作业的 WCET
++ */
++TRACE_EVENT(yat_casched_place,
++
++	TP_PROTO(int job_id, int cpu, u64 benefit, u64 crp_ratio, u64 wcet),
++
++	TP_ARGS(job_id, cpu, benefit, crp_ratio, wcet),
++
++	TP_STRUCT__entry(
++		__field(int, job_id)
++		__field(int, cpu)
++		__field(u64, benefit)
++		__field(u64, crp_ratio)
++		__field(u64, wcet)
++	),
++
++	TP_fast_assign(
++		__entry->job_id		= job_id;
++		__entry->cpu		= cpu;
++		__entry->benefit	= benefit;
++		__entry->crp_ratio	= crp_ratio;
++		__entry->wcet		= wcet;
++	),
++
++	TP_printk("job_id=%d cpu=%d benefit=%llu crp_ratio=%llu wcet=%llu",
++		  __entry->job_id, __entry->cpu,
++		  (unsigned long long)__entry->benefit,
++		  (unsigned long long)__entry->crp_ratio,
++		  (unsigned long long)__entry->wcet)
++);
++
++/*
++ * pick_next_task 选中某个任务。
++ * @cpu:        运行队列所在 CPU
++ * @pid:        被选中的任务
++ * @job_id:     其作业 ID（无作业为 -1）
++ * @nr_running: 该类在本 CPU 上的就绪任务数
++ */
++TRACE_EVENT(yat_casched_pick,
++
++	TP_PROTO(int cpu, int pid, int job_id, unsigned int nr_running),
++
++	TP_ARGS(cpu, pid, job_id, nr_running),
++
++	TP_STRUCT__entry(
++		__field(int, cpu)
++		__field(int, pid)
++		__field(int, job_id)
++		__field(unsigned int, nr_running)
++	),
++
++	TP_fast_assign(
++		__entry->cpu		= cpu;
++		__entry->pid		= pid;
++		__entry->job_id		= job_id;
++		__entry->nr_running	= nr_running;
++	),
++
++	TP_printk("cpu=%d pid=%d job_id=%d nr_running=%u",
++		  __entry->cpu, __entry->pid, __entry->job_id,
++		  __entry->nr_running)
++);
++
++/*
++ * 任务切出时写入历史表的一段执行区间。
++ * 这是 CRP 的唯一真实数据来源；exec_time 为 0 的区间不会产生事件，
++ * 因此本 tracepoint 的事件数应当与真实上下文切换次数同量级。
++ */
++TRACE_EVENT(yat_casched_account,
++
++	TP_PROTO(int cpu, int job_id, u64 exec_time),
++
++	TP_ARGS(cpu, job_id, exec_time),
++
++	TP_STRUCT__entry(
++		__field(int, cpu)
++		__field(int, job_id)
++		__field(u64, exec_time)
++	),
++
++	TP_fast_assign(
++		__entry->cpu		= cpu;
++		__entry->job_id		= job_id;
++		__entry->exec_time	= exec_time;
++	),
++
++	TP_printk("cpu=%d job_id=%d exec_time=%llu",
++		  __entry->cpu, __entry->job_id,
++		  (unsigned long long)__entry->exec_time)
++);
++
++#endif /* _TRACE_YAT_CASCHED_H */
++
++/* This part must be outside protection */
++#include <trace/define_trace.h>
+--- /dev/null
 +++ b/kernel/sched/yat_casched.c
-@@ -0,0 +1,1405 @@
+@@ -0,0 +1,2144 @@
 +/*
 + * Yat_Casched - AJLR层级化DAG调度器 (Decision Final Version)
 + *
@@ -238,22 +447,330 @@ Upstream: linux v6.8 (torvalds)
 +#include <linux/cpumask.h>
 +#include <linux/smp.h>
 +#include <linux/limits.h>
++#include <linux/percpu.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++
++/*
++ * tracepoint 实例化点。
++ *
++ * CREATE_TRACE_POINTS 必须恰好出现在**一个** .c 文件里，且要在
++ * include 之前定义，否则 <trace/define_trace.h> 会为每个 TRACE_EVENT
++ * 生成重复定义。这里就是 Yat_CASched 的唯一实例化点。
++ */
++#define CREATE_TRACE_POINTS
++#include <trace/events/yat_casched.h>
 +
 +/* 缓存热度阈值（jiffies）*/
 +#define YAT_CACHE_HOT_TIME	(HZ / 100)	/* 10ms */
 +#define YAT_MIN_GRANULARITY	(NSEC_PER_SEC / 1000)	/* 1ms - 更短的时间片 */
 +#define YAT_TIME_SLICE		(4 * NSEC_PER_MSEC)	/* 4ms 默认时间片 */
 +
++/* 每个 CPU 历史表的软上限，超过后触发一次惰性裁剪，防止无限增长 */
++#define YAT_HISTORY_MAX_RECORDS	512
++
++/*
++ * 单次 balance 回调最多分配多少个作业。
++ * 纯粹是防御性上限：防止某条状态机 bug 让就绪池反复投喂同一作业时，
++ * 调度器在软中断上下文里无限循环。正常负载下远达不到这个数。
++ */
++#define YAT_BALANCE_MAX_BATCH	256
++
++/*
++ * ============================================================================
++ * 加锁规则（**修改本文件前必须先读这一段**）
++ * ============================================================================
++ *
++ * 本调度类里一共有四把锁，加锁顺序（从外到内）必须严格遵守：
++ *
++ *   rq_lock(rq)                        -- 由核心调度器持有，本文件从不主动获取
++ *     └─ global_dag_lock               -- 保护 global_dag_list / dag_id 分配
++ *          └─ dag->lock                -- 保护 dag->jobs、total_jobs、completed_jobs
++ *               └─ pool->lock          -- 保护 struct yat_ready_job_pool
++ *     └─ global_history_tables[c].lock -- 保护该 CPU 的历史记录链表
++ *     └─ table->lock                   -- 保护加速表哈希桶
++ *
++ * 约束：
++ *
++ * 1. 唯一的嵌套链是 global_dag_lock -> dag->lock -> pool->lock：
++ *    - yat_update_ready_pool() 持 global_dag_lock + dag->lock，
++ *      在内层调 yat_ready_pool_enqueue() 取 pool->lock；
++ *    - yat_destroy_dag() 同样在 dag->lock 内调 yat_ready_pool_remove()。
++ *    这条链的方向**不可反转** —— 任何先取 pool->lock 再取
++ *    global_dag_lock/dag->lock 的写法都会构成 ABBA 死锁。
++ *    其余锁（历史表、加速表）与任何锁都不嵌套：它们只在局部临界区里
++ *    保护单一链表/哈希桶。任何新增的嵌套都会引入 ABBA 死锁风险，
++ *    必须在此处登记。
++ *
++ * 2. **禁止在持锁期间睡眠式分配**。所有 kmalloc/kfree 都必须移到临界区之外：
++ *    - 分配：持锁前用 GFP_ATOMIC/GFP_KERNEL 分配好，失败就放弃本次操作；
++ *    - 释放：持锁期间只做 list_del/hlist_del，把节点挂到栈上的临时链表，
++ *      解锁后再统一 kfree。kfree 可能进入回收器，持自旋锁调用是 UC 的。
++ *
++ * 3. `enqueue_task_yat_casched()/dequeue_task_yat_casched()` 的调用者
++ *    （核心调度器）已经持有 rq_lock，`rq->yat_casched.tasks` 由 rq_lock
++ *    保护。**不要**再引入 yat_pool_lock —— 它保护的 `yat_ready_job_pool`
++ *    是另一份数据（作业就绪池），与 rq 的运行队列无关。
++ *
++ * 4. `balance_yat_casched()` 只在 CPU0 上执行全局分配，此时 rq_lock(CPU0)
++ *    被持有。因此 `yat_schedule_ajlr()` 及其下游（yat_update_ready_pool、
++ *    yat_find_best_core_for_job、yat_add_history_record）全部运行在
++ *    「持 CPU0 rq_lock + 可能关中断」的上下文里：只能 GFP_ATOMIC、
++ *    不能 mutex、不能 schedule()。
++ *
++ * 5. `for_each_online_cpu()` 下访问 `cpu_rq(cpu)->yat_casched` 只读字段
++ *    （nr_running）是允许的；**不要**在未持该 CPU rq_lock 时写入其 rq。
++ * ============================================================================
++ */
++
 +/* 全局数据结构 */
-+static LIST_HEAD(yat_ready_job_pool);                          /* 就绪作业链表头 (兼容) */
-+static DEFINE_SPINLOCK(yat_pool_lock);                         /* 就绪池全局锁 */
 +static struct yat_ready_job_pool *global_ready_pool = NULL;     /* 就绪作业池 */
 +static struct yat_accel_table *global_accel_table = NULL;       /* 加速表 */
 +static struct yat_cpu_history_table global_history_tables[NR_CPUS]; /* 历史表 */
 +static struct list_head global_dag_list = LIST_HEAD_INIT(global_dag_list); /* 活动DAG列表 */
 +static DEFINE_SPINLOCK(global_dag_lock);                       /* DAG列表锁 */
-+static int next_dag_id = 1;                                    /* DAG ID分配器 */
-+static int next_job_id = 1;                                    /* 作业ID分配器 */
++static struct yat_dag_task *global_default_dag;                /* 传统任务的默认DAG */
++static atomic_t next_dag_id = ATOMIC_INIT(1);                  /* DAG ID分配器 */
++static atomic_t next_job_id = ATOMIC_INIT(1);                  /* 作业ID分配器 */
++
++/*
++ * 低开销统计计数器（A6）。
++ *
++ * 这些量每次调度都会更新，因此必须是 per-CPU 的普通加法（无锁、无原子
++ * 操作）；读取时统一用 for_each_possible_cpu() 求和，允许读到略微不一致
++ * 的快照 —— 统计量不需要线性一致。
++ *
++ * 与 tracepoint 的分工：
++ *   - tracepoint 记录**事件序列**（谁在何时被分配到哪个核），用于离线分析；
++ *   - 这里的计数器给出**运行中的总量**（经过多少次 balance、迁移多少次），
++ *     用于 debugfs 一眼查看，不需要开 trace。
++ */
++struct yat_casched_stats {
++	u64 balance_runs;	/* balance 回调真正拿到全局锁的次数 */
++	u64 balance_skips;	/* 抢锁失败、本次跳过的次数（说明争用程度） */
++	u64 jobs_placed;	/* AJLR 成功完成 (job, cpu) 分配的次数 */
++	u64 jobs_nocore;	/* 就绪作业但找不到可用核心的次数 */
++	u64 history_records;	/* 写入历史表的执行区间条数 */
++	u64 accel_inserts;	/* 加速表成功插入条数 */
++	u64 accel_dup;		/* 加速表重复条目（EEXIST）次数 */
++};
++
++static DEFINE_PER_CPU(struct yat_casched_stats, yat_stats);
++
++/* debugfs 根节点：/sys/kernel/debug/yat_casched（未编译 DEBUG_FS 时为 NULL） */
++static struct dentry *yat_debugfs_root;
++
++/*
++ * 计数器增量。
++ *
++ * 用 this_cpu_inc()/this_cpu_add() 而不是 atomic_t：
++ *   - 这些计数器在热点路径上，atomic_t 会引入 lock 前缀，跨核争用严重；
++ *   - 计数器只用于观测，求和时允许短暂不一致（最多丢掉一次正在进行的加法）。
++ * 注意 this_cpu_* 隐含关抢占（单指令 RMW），因此在持有 rq_lock 的上下文里
++ * 调用是安全的。
++ */
++#define YAT_STAT_INC(field)	this_cpu_inc(yat_stats.field)
++#define YAT_STAT_ADD(field, v)	this_cpu_add(yat_stats.field, (v))
++
++/*
++ * 汇总所有 CPU 上的某个计数器。
++ *
++ * 用 offsetof + for_each_possible_cpu 而不是为每个字段写一遍循环：
++ * 7 个计数器写 7 遍样板代码既易错又难维护，而 struct 布局是编译期常量，
++ * 按偏移访问完全类型安全（字段都是 u64，对齐一致）。
++ */
++static u64 yat_stats_sum(size_t offset)
++{
++	u64 total = 0;
++	int cpu;
++
++	for_each_possible_cpu(cpu)
++		total += *(u64 *)((char *)per_cpu_ptr(&yat_stats, cpu) + offset);
++
++	return total;
++}
++
++#define YAT_STAT_SUM(field)	\
++	yat_stats_sum(offsetof(struct yat_casched_stats, field))
++
++/*
++ * debugfs: /sys/kernel/debug/yat_casched/stats
++ *
++ * 输出的是**累计量**，不是瞬时值。要观察时序请开 tracepoint；
++ * 这里回答的是"调度器到底跑了多少轮、分配成功多少次、跳过多少次"。
++ * 特别是 balance_skips / balance_runs 的比值，直接反映全局调度的争用程度 ——
++ * 如果 skips 远大于 runs，说明 trylock 单飞设计下只有一颗核在干活，
++ * 后续需要把 yat_balance_lock 换成更细粒度的分片锁。
++ */
++static int yat_stats_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "balance_runs      %llu\n", YAT_STAT_SUM(balance_runs));
++	seq_printf(m, "balance_skips     %llu\n", YAT_STAT_SUM(balance_skips));
++	seq_printf(m, "jobs_placed       %llu\n", YAT_STAT_SUM(jobs_placed));
++	seq_printf(m, "jobs_nocore       %llu\n", YAT_STAT_SUM(jobs_nocore));
++	seq_printf(m, "history_records   %llu\n", YAT_STAT_SUM(history_records));
++	seq_printf(m, "accel_inserts     %llu\n", YAT_STAT_SUM(accel_inserts));
++	seq_printf(m, "accel_dup         %llu\n", YAT_STAT_SUM(accel_dup));
++	seq_printf(m, "nr_cpu_ids        %u\n", nr_cpu_ids);
++	return 0;
++}
++
++static int yat_stats_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, yat_stats_show, NULL);
++}
++
++static const struct file_operations yat_stats_fops = {
++	.open		= yat_stats_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
++/*
++ * debugfs: /sys/kernel/debug/yat_casched/ready_pool
++ *
++ * 就绪池当前快照。持 pool->lock 读取，所以看到的是某一瞬间的一致视图。
++ * 每行一个作业，按池内顺序（即调度顺序）打印。
++ *
++ * 必须用 spin_lock_irqsave()，不能用 spin_lock()：
++ *   pool->lock 在调度热路径里总是在**关中断**状态下被获取的
++ *   （balance_yat_casched() 运行在 rq_lock 内，而 rq_lock 是 irq-safe 的），
++ *   因此 pool->lock 在 lockdep 眼里是 HARDIRQ-safe 锁。debugfs 的 read()
++ *   跑在普通进程上下文（中断是开的），若这里只 spin_lock() 而不关中断，
++ *   则「进程持有 pool->lock」+「中断里 scheduler_tick() 取 rq->lock 再取
++ *   pool->lock」就构成真实的 ABBA 死锁。实跑 lockdep 已报出
++ *   "possible irq lock inversion dependency detected"。
++ */
++static int yat_ready_pool_show(struct seq_file *m, void *v)
++{
++	struct yat_ready_job_pool *pool = READ_ONCE(global_ready_pool);
++	struct yat_job *job;
++	unsigned long flags;
++
++	if (!pool) {
++		seq_puts(m, "ready pool 尚未初始化\n");
++		return 0;
++	}
++
++	spin_lock_irqsave(&pool->lock, flags);
++	seq_printf(m, "nr_jobs %d\n", pool->nr_jobs);
++	seq_puts(m, "pid\tjob_id\tprio\tdag_prio\twcet\tstate\n");
++	list_for_each_entry(job, &pool->head, ready_list) {
++		seq_printf(m, "%d\t%d\t%d\t%d\t%llu\t%d\n",
++			   job->task ? job->task->pid : 0,
++			   job->job_id, job->job_priority,
++			   job->dag ? job->dag->priority : 0,
++			   (unsigned long long)job->wcet,
++			   job->state);
++	}
++	spin_unlock_irqrestore(&pool->lock, flags);
++	return 0;
++}
++
++static int yat_ready_pool_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, yat_ready_pool_show, NULL);
++}
++
++static const struct file_operations yat_ready_pool_fops = {
++	.open		= yat_ready_pool_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
++/*
++ * debugfs: /sys/kernel/debug/yat_casched/dags
++ *
++ * 活动 DAG 与作业状态分布。用来看"作业卡在哪一层"：
++ * waiting 数远大于 ready 通常意味着依赖图没被正确唤醒
++ * （yat_job_complete() 传播失败），而不是核心不够。
++ */
++static int yat_dags_show(struct seq_file *m, void *v)
++{
++	struct yat_dag_task *dag;
++	struct yat_job *job;
++	unsigned long flags;
++
++	seq_puts(m, "dag_id\tprio\ttotal\tcompleted\twaiting\tready\trunning\n");
++
++	/* 同上：这两把锁在调度路径里都是关中断持有的，读取端必须一起关中断。 */
++	spin_lock_irqsave(&global_dag_lock, flags);
++	list_for_each_entry(dag, &global_dag_list, dag_list) {
++		int waiting = 0, ready = 0, running = 0;
++
++		/*
++		 * 嵌套子类：本函数持有 global_dag_lock 再取 dag->lock，
++		 * 而调度路径里也有同样的顺序（如 yat_update_ready_pool()），
++		 * 用 _nested(1) 明确告诉 lockdep 这是预期的层次，
++		 * 避免把合法的「父 → 子」关系误判为环。
++		 */
++		spin_lock_nested(&dag->lock, 1);
++		list_for_each_entry(job, &dag->jobs, job_list) {
++			switch (job->state) {
++			case YAT_JOB_WAITING:	waiting++;	break;
++			case YAT_JOB_READY:	ready++;	break;
++			case YAT_JOB_RUNNING:	running++;	break;
++			default:				break;
++			}
++		}
++		seq_printf(m, "%d\t%d\t%d\t%d\t\t%d\t%d\t%d\n",
++			   dag->dag_id, dag->priority, dag->total_jobs,
++			   dag->completed_jobs, waiting, ready, running);
++		spin_unlock(&dag->lock);
++	}
++	spin_unlock_irqrestore(&global_dag_lock, flags);
++	return 0;
++}
++
++static int yat_dags_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, yat_dags_show, NULL);
++}
++
++static const struct file_operations yat_dags_fops = {
++	.open		= yat_dags_open,
++	.read		= seq_read,
++	.llseek		= seq_lseek,
++	.release	= single_release,
++};
++
++/*
++ * 创建 debugfs 节点。失败不影响调度功能，只是少了一个观测入口。
++ *
++ * 返回 int 而不是 void：initcall_t 的类型是 int (*)(void)，用
++ * late_initcall() 注册的函数必须严格匹配，否则 ____define_initcall()
++ * 里的 static_assert(__same_type(initcall_t, &fn)) 会直接编译失败。
++ * 返回值恒为 0 —— 节点创建失败不需要阻止内核继续启动。
++ */
++static int __init yat_debugfs_init(void)
++{
++	yat_debugfs_root = debugfs_create_dir("yat_casched", NULL);
++	if (!yat_debugfs_root)
++		return 0;
++
++	debugfs_create_file("stats", 0444, yat_debugfs_root, NULL,
++			    &yat_stats_fops);
++	debugfs_create_file("ready_pool", 0444, yat_debugfs_root, NULL,
++			    &yat_ready_pool_fops);
++	debugfs_create_file("dags", 0444, yat_debugfs_root, NULL,
++			    &yat_dags_fops);
++
++	return 0;
++}
++
++/*
++ * 必须用 late_initcall 而不是在 sched_init() 里创建节点：
++ * sched_init() 跑在 start_kernel() 的早期，此时 debugfs 尚未挂载
++ * （debugfs_init() 是 core_initcall，且 root 目录要到 vfs_caches_init()
++ * 之后才可用），debugfs_create_dir() 会直接返回 -ENODEV 或 NULL。
++ *
++ * late_initcall 阶段用户态还没起，但内核初始化已完成，debugfs 可写。
++ * 创建失败（CONFIG_DEBUG_FS=n 时 debugfs_create_dir() 返回 ERR_PTR 兼容值）
++ * 不影响任何调度路径 —— 所有统计写入都是 this_cpu_inc()，与节点是否存在无关。
++ */
++late_initcall(yat_debugfs_init);
 +
 +/*
 + * AJLR核心数据结构管理函数
@@ -271,13 +788,11 @@ Upstream: linux v6.8 (torvalds)
 +static void yat_ready_pool_destroy(struct yat_ready_job_pool *pool);
 +static int yat_ready_pool_enqueue(struct yat_ready_job_pool *pool, struct yat_job *job);
 +static struct yat_job *yat_ready_pool_dequeue(struct yat_ready_job_pool *pool);
-+static struct yat_job *yat_ready_pool_peek(struct yat_ready_job_pool *pool);
-+static bool yat_ready_pool_empty(struct yat_ready_job_pool *pool);
 +static void yat_ready_pool_remove(struct yat_ready_job_pool *pool, struct yat_job *job);
 +
 +/* History 函数声明 */
 +static void yat_init_history_tables(struct yat_cpu_history_table *tables);
-+static void yat_destroy_history_tables(struct yat_cpu_history_table *tables);
++static void yat_destroy_history_tables(struct yat_cpu_history_table *tables) __maybe_unused;
 +static int yat_add_history_record(int cpu, int job_id, u64 timestamp, u64 exec_time);
 +static u64 yat_get_task_last_timestamp(int cpu, int job_id);
 +static u64 yat_sum_exec_time_since(int cpu, u64 start_ts, u64 end_ts);
@@ -316,6 +831,7 @@ Upstream: linux v6.8 (torvalds)
 +{
 +    struct yat_job *existing_job;
 +    struct list_head *pos;
++    unsigned int nr_jobs;
 +    
 +    if (!pool || !job)
 +        return -EINVAL;
@@ -346,8 +862,18 @@ Upstream: linux v6.8 (torvalds)
 +    list_add_tail(&job->ready_list, pos);
 +    job->state = YAT_JOB_READY;
 +    pool->nr_jobs++;
++    nr_jobs = pool->nr_jobs;
 +    
 +    spin_unlock(&pool->lock);
++
++    /*
++     * tracepoint 放在锁外：trace 事件内部要取 ring buffer 的每 CPU 锁，
++     * 虽然不阻塞，但保持「临界区内只碰数据结构」的惯例能让 lockdep 的
++     * 持有链更易读，也避免 ring buffer 锁与 pool->lock 形成嵌套。
++     * 静态分支未开启时这里只有一条 nop，热路径代价可忽略。
++     */
++    trace_yat_casched_enqueue(job->task ? job->task->pid : 0,
++                              job->job_id, job->job_priority, nr_jobs);
 +    return 0;
 +}
 +
@@ -355,6 +881,7 @@ Upstream: linux v6.8 (torvalds)
 +static struct yat_job *yat_ready_pool_dequeue(struct yat_ready_job_pool *pool)
 +{
 +    struct yat_job *job = NULL;
++    unsigned int nr_jobs = 0;
 +    
 +    if (!pool)
 +        return NULL;
@@ -365,43 +892,25 @@ Upstream: linux v6.8 (torvalds)
 +        list_del_init(&job->ready_list);
 +        job->state = YAT_JOB_RUNNING;
 +        pool->nr_jobs--;
++        nr_jobs = pool->nr_jobs;
 +    }
 +    spin_unlock(&pool->lock);
++
++    if (job)
++        trace_yat_casched_dequeue(job->task ? job->task->pid : 0,
++                                  job->job_id, nr_jobs);
 +    
 +    return job;
 +}
 +
-+/* 查看队头（不移除） */
-+static struct yat_job *yat_ready_pool_peek(struct yat_ready_job_pool *pool)
-+{
-+    struct yat_job *job = NULL;
-+    
-+    if (!pool)
-+        return NULL;
-+    
-+    spin_lock(&pool->lock);
-+    if (!list_empty(&pool->head)) {
-+        job = list_first_entry(&pool->head, struct yat_job, ready_list);
-+    }
-+    spin_unlock(&pool->lock);
-+    
-+    return job;
-+}
-+
-+/* 检查就绪池是否为空 */
-+static bool yat_ready_pool_empty(struct yat_ready_job_pool *pool)
-+{
-+    bool empty;
-+    
-+    if (!pool)
-+        return true;
-+    
-+    spin_lock(&pool->lock);
-+    empty = list_empty(&pool->head);
-+    spin_unlock(&pool->lock);
-+    
-+    return empty;
-+}
++/*
++ * 原 yat_ready_pool_peek() 已删除。
++ *
++ * "peek 之后再做 dequeue" 本身就是 TOCTOU：两者之间池头可能被换掉，
++ * 于是 dequeue 弹出的作业和基于 peek 结果算出的 best_core 对不上
++ * （详见 yat_schedule_ajlr() 的注释）。现在的调用点是原子 dequeue，
++ * 没有任何地方需要非破坏性查看，留着只会诱使后来者重新引入该 bug。
++ */
 +
 +/* 从就绪池移除指定作业 */
 +static void yat_ready_pool_remove(struct yat_ready_job_pool *pool, struct yat_job *job)
@@ -421,16 +930,28 @@ Upstream: linux v6.8 (torvalds)
 + * DAG和作业管理函数
 + */
 +
-+/* 创建DAG */
-+struct yat_dag_task *yat_create_dag(int dag_id, int dag_priority)
++/*
++ * 创建 DAG。
++ *
++ * gfp 必须由调用者显式给出：本函数既能从进程上下文调用（如
++ * yat_create_test_dag()，可用 GFP_KERNEL），也可能从
++ * yat_ajlr_enqueue_task() 这条「持 rq_lock、可能关中断」的原子路径
++ * 首次触达（那里只能 GFP_ATOMIC）。原实现硬编码 GFP_KERNEL，
++ * 在原子上下文里会触发 "sleeping function called from invalid context"。
++ *
++ * dag_id 分配用 atomic_inc_return()：原来 `next_dag_id++` 是
++ * 无保护的 read-modify-write，多 CPU 同时创建 DAG 会拿到重复 ID，
++ * 而 dag_id 是调试/统计路径里识别 DAG 的唯一键。
++ */
++static struct yat_dag_task *__yat_create_dag(int dag_id, int dag_priority, gfp_t gfp)
 +{
 +    struct yat_dag_task *dag;
 +    
-+    dag = kmalloc(sizeof(*dag), GFP_KERNEL);
++    dag = kmalloc(sizeof(*dag), gfp);
 +    if (!dag)
 +        return NULL;
 +    
-+    dag->dag_id = (dag_id <= 0) ? next_dag_id++ : dag_id;
++    dag->dag_id = (dag_id <= 0) ? atomic_inc_return(&next_dag_id) : dag_id;
 +    dag->priority = dag_priority;
 +    dag->total_jobs = 0;
 +    dag->completed_jobs = 0;
@@ -445,51 +966,87 @@ Upstream: linux v6.8 (torvalds)
 +    return dag;
 +}
 +
-+/* 销毁DAG */
++/* 创建DAG（进程上下文默认入口） */
++struct yat_dag_task *yat_create_dag(int dag_id, int dag_priority)
++{
++    return __yat_create_dag(dag_id, dag_priority, GFP_KERNEL);
++}
++
++/*
++ * 销毁DAG。
++ *
++ * 两处必须小心：
++ *
++ * 1. 作业可能同时挂在两处：dag->jobs 与全局就绪池的 pool->head。
++ *    原实现只摘 dag->jobs 就 kfree，若该作业仍在就绪池里，随后的
++ *    yat_ready_pool_peek()/dequeue() 会对已释放内存做 list 操作 ——
++ *    use-after-free。因此必须先把作业从就绪池摘除。
++ *
++ * 2. kfree 不能在自旋锁内调用（kfree 可能进入回收器并抢其他锁）。
++ *    这里摘链与释放分离：临界区里只 list_del，解锁后统一 kfree。
++ *    借用 job->ready_list 串一个栈上的临时链表来完成。
++ */
 +void yat_destroy_dag(struct yat_dag_task *dag)
 +{
 +    struct yat_job *job, *tmp;
-+    
++    LIST_HEAD(doomed);
++
 +    if (!dag)
 +        return;
-+    
++
 +    spin_lock(&global_dag_lock);
-+    list_del(&dag->dag_list);
++    list_del_init(&dag->dag_list);
 +    spin_unlock(&global_dag_lock);
-+    
++
++    /*
++     * 先从就绪池摘除：yat_ready_pool_remove() 只碰 job->ready_list 和
++     * pool->lock，与 dag->lock 无关系，所以在 dag->lock 之外调用。
++     */
++    if (global_ready_pool) {
++        spin_lock(&dag->lock);
++        list_for_each_entry(job, &dag->jobs, job_list)
++            yat_ready_pool_remove(global_ready_pool, job);
++        spin_unlock(&dag->lock);
++    }
++
++    /* 摘 dag->jobs，挂到临时链表上，锁外释放 */
 +    spin_lock(&dag->lock);
 +    list_for_each_entry_safe(job, tmp, &dag->jobs, job_list) {
-+        list_del(&job->job_list);
-+        kfree(job);
++        list_del_init(&job->job_list);
++        list_add_tail(&job->ready_list, &doomed);
 +    }
 +    spin_unlock(&dag->lock);
-+    
++
++    list_for_each_entry_safe(job, tmp, &doomed, ready_list) {
++        list_del_init(&job->ready_list);
++        kfree(job);
++    }
++
 +    kfree(dag);
 +}
 +
-+/* 创建作业 */
-+struct yat_job *yat_create_job(int job_id, int job_priority, u64 wcet, struct yat_dag_task *dag)
++/*
++ * 创建作业。gfp 的约束同 __yat_create_dag()：可能从原子上下文到达。
++ */
++static struct yat_job *__yat_create_job(int job_id, int job_priority, u64 wcet,
++                                       struct yat_dag_task *dag, gfp_t gfp)
 +{
 +    struct yat_job *job;
-+    int i;
 +    
 +    if (!dag)
 +        return NULL;
 +    
-+    job = kmalloc(sizeof(*job), GFP_KERNEL);
++    job = kmalloc(sizeof(*job), gfp);
 +    if (!job)
 +        return NULL;
 +    
-+    job->job_id = (job_id <= 0) ? next_job_id++ : job_id;
++    job->job_id = (job_id <= 0) ? atomic_inc_return(&next_job_id) : job_id;
 +    job->job_priority = job_priority;
 +    job->wcet = wcet;
 +    job->dag = dag;
 +    job->task = NULL;
 +    job->state = YAT_JOB_WAITING;
 +    job->pending_predecessors = 0;
-+    
-+    for (i = 0; i < NR_CPUS; i++)
-+        job->per_cpu_last_ts[i] = 0;
 +    
 +    INIT_LIST_HEAD(&job->job_list);
 +    INIT_LIST_HEAD(&job->ready_list);
@@ -504,49 +1061,120 @@ Upstream: linux v6.8 (torvalds)
 +    return job;
 +}
 +
-+/* 销毁作业 */
++/* 创建作业（进程上下文默认入口） */
++struct yat_job *yat_create_job(int job_id, int job_priority, u64 wcet, struct yat_dag_task *dag)
++{
++    return __yat_create_job(job_id, job_priority, wcet, dag, GFP_KERNEL);
++}
++
++/*
++ * 销毁作业。
++ *
++ * 关键点：必须先把作业从**全局就绪池**摘下来，再摘 DAG 链表，最后才 kfree。
++ * 原实现只做了 list_del(&job->job_list) 就 kfree，如果这个作业此刻正躺在
++ * yat_ready_pool 里，kfree 之后 pool->head 仍指向已释放内存 —— 下一次
++ * yat_ready_pool_dequeue() 就是 use-after-free（KASAN 必报）。
++ *
++ * 顺序也重要：先 pool 再 dag->lock，与
++ * global_dag_lock -> dag->lock -> pool->lock 的既有方向不矛盾
++ * （这里不持 global_dag_lock，只取 pool->lock，两把锁不嵌套）。
++ */
 +void yat_destroy_job(struct yat_job *job)
 +{
 +    if (!job)
 +        return;
-+    
++
++    /* 1. 从全局就绪池摘除（若在池中）。job->ready_list 为空时该函数是 no-op */
++    if (global_ready_pool)
++        yat_ready_pool_remove(global_ready_pool, job);
++
++    /* 2. 从所属 DAG 的作业链表摘除 */
 +    if (job->dag) {
 +        spin_lock(&job->dag->lock);
-+        list_del(&job->job_list);
-+        job->dag->total_jobs--;
++        if (!list_empty(&job->job_list))
++            list_del_init(&job->job_list);
++        if (job->dag->total_jobs > 0)
++            job->dag->total_jobs--;
 +        spin_unlock(&job->dag->lock);
 +    }
-+    
++
 +    kfree(job);
 +}
 +
-+/* 添加作业依赖关系 */
++/*
++ * 建立依赖关系：predecessor 完成之前，job 不可进入就绪池。
++ *
++ * 原实现只做 job->pending_predecessors++，既没有把 job 挂到 predecessor
++ * 的后继链表，也没有把 predecessor 挂到 job 的前驱链表 —— 于是
++ * yat_job_complete() 无从知道该唤醒谁，整条 DAG 依赖链永远停在
++ * pending_predecessors>0 的状态，作业永远不会就绪。
++ */
 +void yat_job_add_dependency(struct yat_job *job, struct yat_job *predecessor)
 +{
-+    if (!job || !predecessor)
++    if (!job || !predecessor || job == predecessor)
 +        return;
-+    
-+    /* 增加待处理前驱计数 */
++
++    /* 依赖边写入需要同时改两端，用 job 自己的 DAG 锁串行化 */
++    if (job->dag)
++        spin_lock(&job->dag->lock);
++    else if (predecessor->dag)
++        spin_lock(&predecessor->dag->lock);
++
++    list_add_tail(&job->predecessors, &predecessor->successors);
 +    job->pending_predecessors++;
-+    
-+    /* TODO: 实现完整的依赖图管理 */
++
++    if (job->dag)
++        spin_unlock(&job->dag->lock);
++    else if (predecessor->dag)
++        spin_unlock(&predecessor->dag->lock);
 +}
 +
-+/* 作业完成处理 */
++/*
++ * 作业完成处理。
++ *
++ * 语义：把自己标记完成，然后逐个通知后继 —— 每个后继的
++ * pending_predecessors 减一，减到 0 的就可以被
++ * yat_update_ready_pool() 收进就绪池。这不是"唤醒"，因为 AJLR 的就绪
++ * 判定完全由 ready_pool + pending_predecessors 驱动，没有等待队列。
++ */
 +void yat_job_complete(struct yat_job *job)
 +{
++    struct yat_job *succ, *tmp;
++    struct yat_dag_task *dag;
++    LIST_HEAD(propagate);
++
 +    if (!job)
 +        return;
-+    
++
++    dag = job->dag;
++
++    /* 1. 在锁内完成状态迁移 + 把后继链表整段搬出来 */
++    if (dag)
++        spin_lock(&dag->lock);
++
++    if (job->state == YAT_JOB_COMPLETED)
++        goto out_unlock;   /* 幂等：重复完成不重复递减后继计数 */
++
 +    job->state = YAT_JOB_COMPLETED;
-+    
-+    if (job->dag) {
-+        spin_lock(&job->dag->lock);
-+        job->dag->completed_jobs++;
-+        spin_unlock(&job->dag->lock);
++    if (dag && dag->completed_jobs < dag->total_jobs)
++        dag->completed_jobs++;
++
++    list_splice_init(&job->successors, &propagate);
++
++    if (dag)
++        spin_unlock(&dag->lock);
++
++    /* 2. 锁外递减后继计数（后面还会取 dag->lock，避免自我嵌套） */
++    list_for_each_entry_safe(succ, tmp, &propagate, predecessors) {
++        list_del_init(&succ->predecessors);
++        if (succ->pending_predecessors > 0)
++            succ->pending_predecessors--;
 +    }
-+    
-+    /* TODO: 唤醒后继作业 */
++    return;
++
++out_unlock:
++    if (dag)
++        spin_unlock(&dag->lock);
 +}
 +
 +/*
@@ -565,35 +1193,67 @@ Upstream: linux v6.8 (torvalds)
 +        INIT_LIST_HEAD(&tables[cpu].time_list);
 +        spin_lock_init(&tables[cpu].lock);
 +        tables[cpu].last_cleanup_time = jiffies;
++        tables[cpu].nr_records = 0;
 +    }
++}
++
++/*
++ * 摘掉整条历史记录链并返回，调用者必须在**锁外**调用 kfree。
++ * 这是把「摘链」与「释放」分离的标准做法：kfree 会进入 slab 回收器，
++ * 可能抢 zone lock / lru_lock，在自旋锁内调用是上下文违规。
++ */
++static void yat_detach_history_records(struct yat_cpu_history_table *tbl,
++				      struct list_head *out)
++{
++	INIT_LIST_HEAD(out);
++
++	spin_lock(&tbl->lock);
++	list_splice_init(&tbl->time_list, out);
++	tbl->nr_records = 0;
++	spin_unlock(&tbl->lock);
 +}
 +
 +/* 销毁历史表 */
 +static void yat_destroy_history_tables(struct yat_cpu_history_table *tables)
 +{
 +    struct yat_history_record *rec, *tmp;
++    LIST_HEAD(doomed);
 +    int cpu;
 +    
 +    if (!tables)
 +        return;
 +    
 +    for (cpu = 0; cpu < NR_CPUS; cpu++) {
-+        spin_lock(&tables[cpu].lock);
-+        list_for_each_entry_safe(rec, tmp, &tables[cpu].time_list, list) {
++        yat_detach_history_records(&tables[cpu], &doomed);
++        list_for_each_entry_safe(rec, tmp, &doomed, list) {
 +            list_del(&rec->list);
 +            kfree(rec);
 +        }
-+        spin_unlock(&tables[cpu].lock);
 +    }
 +}
 +
-+/* 添加历史记录 */
++/*
++ * 添加历史记录。
++ *
++ * 上下文：可能从 balance_yat_casched()（持 rq_lock，可能关中断）以及
++ * pick_next_task/put_prev_task（持 rq_lock）调用，所以分配必须是
++ * GFP_ATOMIC 且不能失败后重试。
++ *
++ * 限流：链表长度超过 YAT_HISTORY_MAX_RECORDS 时，在**同一次插入**里
++ * 顺手摘掉最旧的一批（链表按时间戳递增，头部最旧）。裁剪部分同样
++ * 在锁外 kfree。
++ */
 +static int yat_add_history_record(int cpu, int job_id, u64 timestamp, u64 exec_time)
 +{
-+    struct yat_history_record *rec;
++    struct yat_history_record *rec, *old, *tmp;
++    struct yat_cpu_history_table *tbl;
++    LIST_HEAD(expired);
++    bool need_trim = false;
 +    
 +    if (cpu < 0 || cpu >= NR_CPUS)
 +        return -EINVAL;
++    
++    tbl = &global_history_tables[cpu];
 +    
 +    rec = kmalloc(sizeof(*rec), GFP_ATOMIC);
 +    if (!rec)
@@ -603,10 +1263,44 @@ Upstream: linux v6.8 (torvalds)
 +    rec->timestamp = timestamp;
 +    rec->exec_time = exec_time;
 +    
-+    spin_lock(&global_history_tables[cpu].lock);
++    spin_lock(&tbl->lock);
 +    /* 直接插入链表尾部（时间戳递增） */
-+    list_add_tail(&rec->list, &global_history_tables[cpu].time_list);
-+    spin_unlock(&global_history_tables[cpu].lock);
++    list_add_tail(&rec->list, &tbl->time_list);
++    tbl->nr_records++;
++    
++    if (tbl->nr_records > YAT_HISTORY_MAX_RECORDS) {
++        /*
++         * 一次裁掉 1/4，避免每次插入都裁一条导致锁内工作变成常量开销，
++         * 也避免裁剪频率随负载线性上升。
++         */
++        unsigned int target = YAT_HISTORY_MAX_RECORDS * 3 / 4;
++        unsigned int excess = tbl->nr_records - target;
++        
++        list_for_each_entry_safe(old, tmp, &tbl->time_list, list) {
++            if (!excess)
++                break;
++            list_move_tail(&old->list, &expired);
++            tbl->nr_records--;
++            excess--;
++        }
++        need_trim = true;
++    }
++    spin_unlock(&tbl->lock);
++    
++    if (need_trim) {
++        list_for_each_entry_safe(old, tmp, &expired, list) {
++            list_del(&old->list);
++            kfree(old);
++        }
++    }
++
++    /*
++     * 统计 + tracepoint 都放在锁外：本函数在持 rq_lock 的调度回调里运行，
++     * 越短地持有 tbl->lock 越好；trace 事件的写入也不该被 tbl->lock 串行化，
++     * 否则每个 CPU 的历史表锁会变成全局 trace 吞吐的瓶颈。
++     */
++    YAT_STAT_INC(history_records);
++    trace_yat_casched_account(cpu, job_id, exec_time);
 +    
 +    return 0;
 +}
@@ -653,24 +1347,38 @@ Upstream: linux v6.8 (torvalds)
 +    return sum;
 +}
 +
-+/* 清理过期的历史记录 */
++/*
++ * 清理过期的历史记录。
++ *
++ * 链表按时间戳递增，所以从头部扫到第一个未过期即可。
++ * 同样把 kfree 移出临界区。
++ */
 +void yat_cleanup_old_records(int cpu, u64 cutoff_time)
 +{
 +    struct yat_history_record *rec, *tmp;
++    struct yat_cpu_history_table *tbl;
++    LIST_HEAD(expired);
 +    
 +    if (cpu < 0 || cpu >= NR_CPUS)
 +        return;
 +    
-+    spin_lock(&global_history_tables[cpu].lock);
-+    list_for_each_entry_safe(rec, tmp, &global_history_tables[cpu].time_list, list) {
++    tbl = &global_history_tables[cpu];
++    
++    spin_lock(&tbl->lock);
++    list_for_each_entry_safe(rec, tmp, &tbl->time_list, list) {
 +        if (rec->timestamp >= cutoff_time)
 +            break;
 +        
++        list_move_tail(&rec->list, &expired);
++        tbl->nr_records--;
++    }
++    tbl->last_cleanup_time = jiffies;
++    spin_unlock(&tbl->lock);
++    
++    list_for_each_entry_safe(rec, tmp, &expired, list) {
 +        list_del(&rec->list);
 +        kfree(rec);
 +    }
-+    global_history_tables[cpu].last_cleanup_time = jiffies;
-+    spin_unlock(&global_history_tables[cpu].lock);
 +}
 +
 +/* 初始化加速表 */
@@ -694,26 +1402,54 @@ Upstream: linux v6.8 (torvalds)
 +    return 0;
 +}
 +
-+/* 销毁加速表 */
++/*
++ * 销毁加速表。
++ *
++ * 原实现在 table->lock 里一边 hlist_del 一边 kfree，还顺手 kfree 了
++ * hash_buckets 本身。kfree 会进 slab 回收器，可能抢 zone/lru 锁，
++ * 在自旋锁内调用是上下文违规（lockdep 会报 invalid context）。
++ *
++ * 改成：持锁只做「把桶数组摘走」和「把全部条目挂到临时链表」，
++ * 解锁后再统一释放条目与桶数组。
++ */
 +void yat_accel_table_destroy(struct yat_accel_table *table)
 +{
 +    struct yat_accel_entry *entry;
++    /*
++     * 两个迭代器必须分开声明：hlist_for_each_entry_safe() 的游标类型是
++     * struct hlist_node *，而 list_for_each_entry_safe() 的游标类型必须是
++     * struct yat_accel_entry *。复用同一个变量会让编译器按第一种用法把
++     * entry 推断成 hlist_node，随后报出「hlist_node 没有 lru_list 成员」。
++     */
 +    struct hlist_node *tmp;
++    struct yat_accel_entry *next;
++    struct hlist_head *buckets;
++    LIST_HEAD(doomed);
 +    int i;
 +    
 +    if (!table || !table->hash_buckets)
 +        return;
 +    
 +    spin_lock(&table->lock);
++    buckets = table->hash_buckets;
++    table->hash_buckets = NULL;
 +    for (i = 0; i < (1 << YAT_ACCEL_HASH_BITS); i++) {
-+        hlist_for_each_entry_safe(entry, tmp, &table->hash_buckets[i], hash_node) {
++        hlist_for_each_entry_safe(entry, tmp, &buckets[i], hash_node) {
 +            hlist_del(&entry->hash_node);
-+            kfree(entry);
++            /*
++             * 借用 lru_list 把条目串到临时链表上 —— 条目此刻已脱离
++             * 哈希表，不会再被查找路径看到，所以可以安全借道。
++             */
++            list_add_tail(&entry->lru_list, &doomed);
 +        }
 +    }
-+    kfree(table->hash_buckets);
-+    table->hash_buckets = NULL;
 +    spin_unlock(&table->lock);
++    
++    list_for_each_entry_safe(entry, next, &doomed, lru_list) {
++        list_del(&entry->lru_list);
++        kfree(entry);
++    }
++    kfree(buckets);
 +}
 +
 +/*
@@ -742,7 +1478,17 @@ Upstream: linux v6.8 (torvalds)
 +    return NULL;
 +}
 +
-+/* 插入加速表条目 */
++/*
++ * 插入加速表条目。
++ *
++ * 原实现在 table->lock 内做 kmalloc(GFP_ATOMIC)，而本函数由
++ * yat_find_best_core_for_job() 在 balance_yat_casched() 里按「每个
++ * online CPU」调用一次 —— 64 核下一次全局调度就有 64 次锁内分配。
++ *
++ * 改为「先无锁分配 → 持锁插入 → 若发现并发插入则释放自己的副本」。
++ * 这是内核里处理 "allocate before lock" 的标准模式：多分配一次远比
++ * 在原子上下文里持锁分配便宜。
++ */
 +int yat_accel_table_insert(struct yat_accel_table *table, pid_t task_pid, int cpu_id, u64 benefit, u64 wcet, u64 crp_ratio)
 +{
 +    struct yat_accel_entry *entry;
@@ -751,21 +1497,13 @@ Upstream: linux v6.8 (torvalds)
 +    if (!table || !table->hash_buckets)
 +        return -EINVAL;
 +    
-+    spin_lock(&table->lock);
-+    
-+    /* 检查是否已存在 */
-+    entry = yat_accel_find_entry(table, task_pid, cpu_id);
-+    if (entry) {
-+        spin_unlock(&table->lock);
-+        return -EEXIST;
-+    }
-+    
-+    /* 创建新条目 */
++    /*
++     * 分配放在临界区之外。注意调用上下文是 balance_yat_casched()，
++     * 持 rq_lock 且可能关中断，所以只能用 GFP_ATOMIC。
++     */
 +    entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
-+    if (!entry) {
-+        spin_unlock(&table->lock);
++    if (!entry)
 +        return -ENOMEM;
-+    }
 +    
 +    entry->job_id = task_pid;  /* 兼容性：将task_pid存储在job_id字段中 */
 +    entry->cpu_id = cpu_id;
@@ -773,11 +1511,24 @@ Upstream: linux v6.8 (torvalds)
 +    entry->wcet = wcet;
 +    entry->crp_ratio = crp_ratio;
 +    entry->last_update_time = jiffies;
++    INIT_LIST_HEAD(&entry->lru_list);
 +    
 +    hash_val = yat_accel_hash(task_pid, cpu_id);
-+    hlist_add_head(&entry->hash_node, &table->hash_buckets[hash_val]);
 +    
++    spin_lock(&table->lock);
++    /* 检查是否已存在（可能在分配期间被别的 CPU 插入了） */
++    if (yat_accel_find_entry(table, task_pid, cpu_id)) {
++        spin_unlock(&table->lock);
++        kfree(entry);
++        /* 重复条目不是错误，只说明该 (job, cpu) 快照已在表里 */
++        YAT_STAT_INC(accel_dup);
++        return -EEXIST;
++    }
++    hlist_add_head(&entry->hash_node, &table->hash_buckets[hash_val]);
 +    spin_unlock(&table->lock);
++
++    YAT_STAT_INC(accel_inserts);
++    
 +    return 0;
 +}
 +
@@ -841,17 +1592,21 @@ Upstream: linux v6.8 (torvalds)
 +    }
 +    
 +    hlist_del(&entry->hash_node);
-+    kfree(entry);
-+    
 +    spin_unlock(&table->lock);
++    
++    /* kfree 移到锁外：持自旋锁调用会进入 slab 回收器 */
++    kfree(entry);
 +    return 0;
 +}
 +
-+/* 清理过期条目 */
++/* 清理过期条目（摘链与释放分离，同 yat_accel_table_destroy） */
 +void yat_accel_table_cleanup(struct yat_accel_table *table, u64 before_time)
 +{
 +    struct yat_accel_entry *entry;
++    /* 同 yat_accel_table_destroy()：hlist 与 list 的游标类型不同，必须分开。 */
 +    struct hlist_node *tmp;
++    struct yat_accel_entry *next;
++    LIST_HEAD(doomed);
 +    int i;
 +    
 +    if (!table || !table->hash_buckets)
@@ -862,92 +1617,114 @@ Upstream: linux v6.8 (torvalds)
 +        hlist_for_each_entry_safe(entry, tmp, &table->hash_buckets[i], hash_node) {
 +            if (time_before((unsigned long)entry->last_update_time, (unsigned long)before_time)) {
 +                hlist_del(&entry->hash_node);
-+                kfree(entry);
++                list_add_tail(&entry->lru_list, &doomed);
 +            }
 +        }
 +    }
 +    table->last_cleanup_time = jiffies;
 +    spin_unlock(&table->lock);
++    
++    list_for_each_entry_safe(entry, next, &doomed, lru_list) {
++        list_del(&entry->lru_list);
++        kfree(entry);
++    }
 +}
 +
 +/*
 + * 历史表操作函数
 + */
 +
-+/* 生成时间戳的哈希值 */
 +/*
-+ * 初始化Yat_Casched运行队列 - AJLR版本
++ * 全局共享结构的一次性初始化。
++ *
++ * 调用时机：core.c 的 sched_init() 在 for_each_possible_cpu() 循环里对
++ * **每个可能的 CPU** 调用 init_yat_casched_rq()。而 ready_pool / accel_table /
++ * default_dag / global_history_tables 都是**全 CPU 共享**的，绝不能按 CPU 重复
++ * 初始化 —— 原实现正是在这个循环里反复 kmalloc（只用 if 判 NULL 挡，存在
++ * 分配失败后其它 CPU 反复重试并各自 fallback 出私有池的竞态），并且反复
++ * 调用 yat_init_history_tables(global_history_tables) 把已经写入的历史记录
++ * 链表头全部重置，等于隔一个 CPU 就丢弃一次统计。
++ *
++ * 上下文：sched_init() 处于 start_kernel() 的单线程、进程上下文（boot CPU，
++ * 中断关闭但可睡眠），因此这里用 GFP_KERNEL 是合法的。
++ */
++static bool yat_global_init_done;
++
++static void yat_global_init_once(void)
++{
++    if (READ_ONCE(yat_global_init_done))
++        return;
++
++    /* 1. 就绪作业池（全 CPU 共享，见锁序说明第 1 条） */
++    if (!global_ready_pool) {
++        global_ready_pool = kmalloc(sizeof(*global_ready_pool), GFP_KERNEL);
++        if (global_ready_pool)
++            yat_ready_pool_init(global_ready_pool);
++        else
++            pr_err("yat_casched: 无法分配全局就绪池，AJLR 全局调度将被跳过\n");
++    }
++
++    /* 2. 加速表（纯遥测结构，分配失败不影响调度正确性） */
++    if (!global_accel_table) {
++        global_accel_table = kmalloc(sizeof(*global_accel_table), GFP_KERNEL);
++        if (global_accel_table)
++            yat_accel_table_init(global_accel_table);
++        else
++            pr_warn("yat_casched: 无法分配全局加速表，遥测功能关闭\n");
++    }
++
++    /*
++     * 3. 默认 DAG。
++     *
++     * 必须在这里创建：yat_ajlr_enqueue_task() 只做 READ_ONCE(global_default_dag)，
++     * 不会再在原子上下文里惰性创建。没有这一句，所有任务的 p->yat_casched.job
++     * 永远是 NULL，AJLR 路径完全失效。
++     *
++     * dag_id 传 0 表示"由 atomic 计数器分配"，避免与后续 yat_create_dag()
++     * 手工传入的 ID 冲突。
++     */
++    if (!global_default_dag) {
++        global_default_dag = __yat_create_dag(0, 0, GFP_KERNEL);
++        if (!global_default_dag)
++            pr_err("yat_casched: 无法创建默认 DAG，AJLR 路径将退化为纯 FIFO\n");
++    }
++
++    /* 4. 历史表（全 CPU 共享，下标是 CPU 号而不是 rq 私有副本） */
++    yat_init_history_tables(global_history_tables);
++
++    WRITE_ONCE(yat_global_init_done, true);
++}
++
++/*
++ * 初始化 Yat_Casched 运行队列 - AJLR 版本
++ *
++ * 本函数被 sched_init() 按 possible CPU 调用，所以必须区分：
++ *   - 每 CPU 私有状态（tasks/nr_running/active_dags/...）：每次都初始化；
++ *   - 全 CPU 共享状态（ready_pool/accel_table/default_dag/history）：
++ *     走 yat_global_init_once()，只初始化一次。
++ *
++ * 注意：struct yat_casched_rq 里不再有 history_tables 私有副本，历史记录
++ * 统一放在 global_history_tables[cpu] 中，避免 NR_CPUS² 的内存浪费。
 + */
 +void init_yat_casched_rq(struct yat_casched_rq *rq)
 +{
-+    printk(KERN_INFO "======init yat_casched rq (AJLR Final Version)======\n");
-+    
++    if (!rq)
++        return;
++
++    /* ---- 每 CPU 私有部分 ---- */
 +    INIT_LIST_HEAD(&rq->tasks);
++    INIT_LIST_HEAD(&rq->active_dags);
 +    rq->nr_running = 0;
 +    rq->agent = NULL;
 +    rq->cache_decay_jiffies = jiffies;
 +    spin_lock_init(&rq->history_lock);
-+    
-+    /* 初始化AJLR核心结构 */
-+    
-+    /* 1. 初始化就绪作业池 */
-+    if (!global_ready_pool) {
-+        global_ready_pool = kmalloc(sizeof(struct yat_ready_job_pool), GFP_KERNEL);
-+        if (global_ready_pool) {
-+            yat_ready_pool_init(global_ready_pool);
-+            printk(KERN_INFO "yat_casched: global_ready_pool allocated successfully\n");
-+        } else {
-+            printk(KERN_ERR "yat_casched: Failed to allocate global_ready_pool\n");
-+        }
-+    }
++
++    /* ---- 全 CPU 共享部分：一次性初始化 ---- */
++    yat_global_init_once();
++
++    /* 共享指针在初始化之后才可能被读到，这里的赋值天然是单线程的 */
 +    rq->ready_pool = global_ready_pool;
-+    
-+    /* 确保 ready_pool 不为 NULL，如果分配失败则创建临时的 */
-+    if (!rq->ready_pool) {
-+        printk(KERN_WARNING "yat_casched: Creating fallback ready_pool\n");
-+        rq->ready_pool = kmalloc(sizeof(struct yat_ready_job_pool), GFP_KERNEL);
-+        if (rq->ready_pool) {
-+            yat_ready_pool_init(rq->ready_pool);
-+        } else {
-+            printk(KERN_ERR "yat_casched: Critical error - cannot allocate ready_pool\n");
-+            return;
-+        }
-+    }
-+    
-+    /* 2. 初始化DAG列表 */
-+    INIT_LIST_HEAD(&rq->active_dags);
-+    /* global_dag_list 和 global_dag_lock 已经在声明时静态初始化 */
-+    
-+    /* 3. 初始化加速表 */
-+    if (!global_accel_table) {
-+        global_accel_table = kmalloc(sizeof(struct yat_accel_table), GFP_KERNEL);
-+        if (global_accel_table) {
-+            yat_accel_table_init(global_accel_table);
-+            printk(KERN_INFO "yat_casched: global_accel_table allocated successfully\n");
-+        } else {
-+            printk(KERN_ERR "yat_casched: Failed to allocate global_accel_table\n");
-+        }
-+    }
 +    rq->accel_table = global_accel_table;
-+    
-+    /* 确保 accel_table 不为 NULL */
-+    if (!rq->accel_table) {
-+        printk(KERN_WARNING "yat_casched: Creating fallback accel_table\n");
-+        rq->accel_table = kmalloc(sizeof(struct yat_accel_table), GFP_KERNEL);
-+        if (rq->accel_table) {
-+            yat_accel_table_init(rq->accel_table);
-+        } else {
-+            printk(KERN_ERR "yat_casched: Critical error - cannot allocate accel_table\n");
-+        }
-+    }
-+    
-+    /* 4. 初始化历史表（使用旧的哈希表实现保持兼容性） */
-+    yat_init_history_tables(rq->history_tables);
-+    
-+    /* 新的历史表（AJLR双向链表实现） */
-+    yat_init_history_tables(global_history_tables);
-+    
-+    printk(KERN_INFO "yat_casched: AJLR structures initialized\n");
 +}
 +
 +/*
@@ -959,7 +1736,18 @@ Upstream: linux v6.8 (torvalds)
 +}
 +
 +/*
-+ * 更新任务的虚拟运行时间
++ * 更新当前任务的运行时统计 - AJLR 版本
++ *
++ * 与 CFS 的 update_curr() 对齐，必须同时维护三样东西：
++ *   1. se.exec_start      —— 下次计算 delta 的基准点；
++ *   2. se.sum_exec_runtime —— 任务累计运行时间（**原实现漏了这一条**）；
++ *   3. 本类私有的 vruntime —— 供优先级/时间片策略使用。
++ *
++ * 漏掉 (2) 的后果是连锁的：task_tick_yat_casched() 用
++ *   runtime = p->se.sum_exec_runtime - p->se.prev_sum_exec_runtime;
++ * 判断时间片是否耗尽，而 sum_exec_runtime 永远是 0，于是 runtime 恒为 0，
++ * 时间片检查永远不成立 —— Yat 任务在 tick 上永远不会被抢占，只能等它
++ * 自己阻塞或退出。这是"调度器看起来能跑但行为完全不对"的典型症状。
 + */
 +void update_curr_yat_casched(struct rq *rq)
 +{
@@ -974,7 +1762,11 @@ Upstream: linux v6.8 (torvalds)
 +    if (unlikely((s64)delta_exec < 0))
 +        delta_exec = 0;
 +
++    if (unlikely(!delta_exec))
++        return;
++
 +    curr->se.exec_start = now;
++    curr->se.sum_exec_runtime += delta_exec;
 +    curr->yat_casched.vruntime += delta_exec;
 +}
 +
@@ -991,55 +1783,68 @@ Upstream: linux v6.8 (torvalds)
 +
 +/*
 + * 将任务加入运行队列 - AJLR版本
++ *
++ * 锁的归属：本函数由核心调度器在**持有 rq_lock(rq)** 的上下文里调用，
++ * rq->yat_casched.tasks / nr_running 天然由 rq_lock 保护，因此这里
++ * **不需要也不应该**再拿 yat_pool_lock。
++ *
++ * 原实现在这里 spin_lock(&yat_pool_lock) 之后直接 return 而没有 unlock，
++ * 造成两处问题：
++ *   - 第二次入队即自旋死锁（同一 CPU 重复获取非递归锁）；
++ *   - 即使补上 unlock，yat_pool_lock 保护的是 yat_ready_job_pool，
++ *     与 rq 运行队列无关，属于「用错误的锁保护数据」。
++ *
++ * 另外 yat_ajlr_enqueue_task() 需要在原子上下文里分配 job，见其实现。
 + */
 +void enqueue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
 +{
 +    struct yat_casched_rq *yat_rq = &rq->yat_casched;
-+    
-+    /* 减少printk频率 - 只在第一次enqueue时打印 */
-+    if (yat_rq->nr_running == 0) {
-+        printk(KERN_INFO "yat_casched: enqueue first task (AJLR)\n");
-+    }
 +
-+    spin_lock(&yat_pool_lock);
-+    
-+    /* 初始化任务的Yat_Casched实体 */
++    /* 初始化任务的 Yat_Casched 实体 */
 +    if (list_empty(&p->yat_casched.run_list)) {
 +        INIT_LIST_HEAD(&p->yat_casched.run_list);
 +        p->yat_casched.vruntime = 0;
 +        p->yat_casched.last_cpu = -1;  /* 使用-1表示未初始化 */
 +        p->yat_casched.job = NULL;     /* 初始化作业指针 */
 +    }
-+    
-+    /* 添加到运行队列 */
++
++    /* 添加到运行队列（rq_lock 已由调用者持有） */
 +    list_add_tail(&p->yat_casched.run_list, &yat_rq->tasks);
 +    yat_rq->nr_running++;
-+    
++
 +    /* AJLR处理：创建或更新作业信息 */
 +    yat_ajlr_enqueue_task(rq, p, flags);
 +}
 +
 +/*
 + * 将任务从运行队列移除 - AJLR版本
++ *
++ * 同上：rq->yat_casched.tasks 由 rq_lock 保护，不涉及 yat_pool_lock。
 + */
 +void dequeue_task_yat_casched(struct rq *rq, struct task_struct *p, int flags)
 +{
 +    struct yat_casched_rq *yat_rq = &rq->yat_casched;
 +
-+    spin_lock(&yat_pool_lock);
 +    if (!list_empty(&p->yat_casched.run_list)) {
 +        list_del_init(&p->yat_casched.run_list);
 +        yat_rq->nr_running--;
 +    }
-+    spin_unlock(&yat_pool_lock);
-+    
++
 +    /* AJLR处理：更新作业状态 */
 +    yat_ajlr_dequeue_task(rq, p, flags);
 +}
 +
 +/*
-+ * 选择下一个要运行的任务 - 优化版本
-+ * 减少AJLR复杂度，提高调度效率
++ * 选择下一个要运行的任务
++ *
++ * 说明（A5 审查结论）：
++ *  - 这里**不做**任何历史记账。原实现在 pick_next_task 里以 exec_time=0
++ *    插一条历史记录，等于凭空制造"0 长度执行窗口"，会直接拉低
++ *    yat_sum_exec_time_since() 的均值，让 CRP 比率失真；真正的记账点在
++ *    put_prev_task()（一次完整的 [开始, 结束] 区间）。
++ *  - 调度类回调运行在 rq_lock 之下，这里只做 O(n) 扫描，不分配内存。
++ *  - 只扫前 3 个候选是有意为之：yat_rq->tasks 已按入队顺序排列，
++ *    头部是最活跃的任务，扫全部会让 pick 变成 O(队列长度)。
 + */
 +struct task_struct *pick_next_task_yat_casched(struct rq *rq)
 +{
@@ -1047,54 +1852,54 @@ Upstream: linux v6.8 (torvalds)
 +    struct task_struct *p = NULL;
 +    struct sched_yat_casched_entity *yat_se;
 +    int best_priority = INT_MAX;
-+    
-+    if (yat_rq->nr_running == 0)
++
++    if (yat_rq->nr_running == 0 || list_empty(&yat_rq->tasks))
 +        return NULL;
-+    
-+    /* 快速路径：简化的优先级调度，不运行完整AJLR */
-+    if (!list_empty(&yat_rq->tasks)) {
++
++    {
 +        struct list_head *pos;
 +        int count = 0;
-+        
-+        /* 在前3个任务中选择最高优先级 */
++
 +        list_for_each(pos, &yat_rq->tasks) {
-+            if (count >= 3) break;
-+            
++            struct task_struct *task;
++            int priority;
++
++            if (count >= 3)
++                break;
++
 +            yat_se = list_entry(pos, struct sched_yat_casched_entity, run_list);
-+            struct task_struct *task = container_of(yat_se, struct task_struct, yat_casched);
-+            
-+            int priority = (yat_se->job) ? yat_se->job->job_priority : 0;
-+            
++            task = container_of(yat_se, struct task_struct, yat_casched);
++            priority = yat_se->job ? yat_se->job->job_priority : 0;
++
 +            if (priority < best_priority) {
 +                best_priority = priority;
 +                p = task;
 +            }
 +            count++;
 +        }
-+        
-+        /* 如果没找到，使用第一个任务 */
++
 +        if (!p) {
-+            yat_se = list_first_entry(&yat_rq->tasks, 
-+                                     struct sched_yat_casched_entity, 
++            yat_se = list_first_entry(&yat_rq->tasks,
++                                     struct sched_yat_casched_entity,
 +                                     run_list);
 +            p = container_of(yat_se, struct task_struct, yat_casched);
 +        }
 +    }
-+    
++
 +    if (p) {
-+        /* 记录当前CPU为任务的最后运行CPU */
 +        p->yat_casched.last_cpu = rq->cpu;
-+        
-+        /* 如果任务关联了作业，更新作业信息 */
-+        if (p->yat_casched.job) {
-+            p->yat_casched.job->per_cpu_last_ts[rq->cpu] = ktime_get_ns();
-+            /* 简化的历史记录 */
-+            if (rq->cpu >= 0 && rq->cpu < NR_CPUS) {
-+                yat_add_history_record(rq->cpu, p->yat_casched.job->job_id, rq_clock_task(rq), 0);
-+            }
-+        }
++
++        /*
++         * trace 在 pick 之后、返回之前打点：此时 p 已经确定，rq->nr_running
++         * 仍是本次 pick 看到的值（set_next_task 尚未扣减），语义上就是
++         * "在这个队列长度下选中了谁"。job 可能为 NULL（任务尚未绑定作业），
++         * 用 ?: 兜底成 0，避免解引用。
++         */
++        trace_yat_casched_pick(rq->cpu, p->pid,
++                               p->yat_casched.job ? p->yat_casched.job->job_id : 0,
++                               rq->yat_casched.nr_running);
 +    }
-+    
++
 +    return p;
 +}
 +
@@ -1107,19 +1912,29 @@ Upstream: linux v6.8 (torvalds)
 +}
 +
 +/*
-+ * 放置前一个任务
++ * 放置前一个任务（一次完整的执行区间在此结算）
++ *
++ * 顺序**必须**是「先算 delta，再 update_curr」：
++ * update_curr_yat_casched() 会把 p->se.exec_start 推到 now，之后再用
++ * now - exec_start 就只能得到 0。原实现正是这个顺序，导致历史表里
++ * 每条记录的 exec_time 都是 0，yat_get_crp_ratio() 拿到的始终是
++ * "零执行时间"，缓存热度判据整体失效。
 + */
 +void put_prev_task_yat_casched(struct rq *rq, struct task_struct *p)
 +{
++    u64 now = rq_clock_task(rq);
 +    u64 delta_exec;
++
++    delta_exec = now - p->se.exec_start;
++    if (unlikely((s64)delta_exec < 0))
++        delta_exec = 0;
++
 +    update_curr_yat_casched(rq);
-+    
-+    delta_exec = rq_clock_task(rq) - p->se.exec_start;
-+    
++
 +    /* 更新历史表（AJLR 双向链表实现） */
-+    if (p->yat_casched.job && delta_exec > 0)
++    if (p->yat_casched.job && delta_exec > 0 && rq->cpu >= 0 && rq->cpu < NR_CPUS)
 +        yat_add_history_record(rq->cpu, p->yat_casched.job->job_id,
-+                               rq_clock_task(rq), delta_exec);
++                               now, delta_exec);
 +}
 +
 +/*
@@ -1161,13 +1976,39 @@ Upstream: linux v6.8 (torvalds)
 +}
 +
 +/*
-+ * 负载均衡 - 现在是我们的主调度入口
++ * 负载均衡 —— 本调度类的全局调度入口
++ *
++ * 原实现只在 rq->cpu == 0 上执行。这在「所有 Yat 任务都被 pin 在 CPU0」
++ * 的极端情况下等于没有调度：CPU0 一旦被一个长任务占住，balance 回调
++ * 就不会再被触发，其它核上的就绪作业永远等不到分配。
++ *
++ * 改为「谁先到谁执行，用 trylock 保证单飞」：
++ *   - balance 回调本身已持 rq_lock(本 CPU)，且可能关中断，所以只能
++ *     spin_trylock —— 绝不能阻塞等待另一颗 CPU 上的全局调度结束；
++ *   - 抢不到锁说明另一颗 CPU 正在做全局分配，本次直接返回，
++ *     下一次 balance 会再来，不会丢作业；
++ *   - 真正的数据竞争仍由 global_dag_lock / pool->lock 保护，
++ *     yat_balance_lock 只是把「一整轮分配」做成原子操作，
++ *     避免两个 CPU 同时把同一个作业算给不同核心。
 + */
++static DEFINE_SPINLOCK(yat_balance_lock);
++
 +int balance_yat_casched(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 +{
-+    /* 只在CPU 0上执行全局调度，避免多核竞争 */
-+    if (rq->cpu == 0)
-+        yat_schedule_ajlr(&rq->yat_casched);
++    if (!spin_trylock(&yat_balance_lock)) {
++        /*
++         * 抢不到锁说明另一颗 CPU 正在做全局分配。这个计数是「争用强度」
++         * 的直接指标：持续偏高意味着 balance 触发过于频繁，或单轮分配
++         * 耗时过长，值得回头调 YAT_BALANCE_MAX_BATCH。
++         */
++        YAT_STAT_INC(balance_skips);
++        return 0;
++    }
++
++    YAT_STAT_INC(balance_runs);
++    yat_schedule_ajlr(&rq->yat_casched);
++
++    spin_unlock(&yat_balance_lock);
 +    return 0;
 +}
 +
@@ -1195,13 +2036,26 @@ Upstream: linux v6.8 (torvalds)
 +
 +void rq_offline_yat_casched(struct rq *rq)
 +{
-+    struct yat_casched_rq *yat_rq = &rq->yat_casched;
-+    
-+    /* CPU下线处理 - 清理新的历史表数据结构 */
-+    yat_destroy_history_tables(yat_rq->history_tables);
-+    
-+    /* 注意：全局结构不在这里释放，因为它们可能被其他CPU使用 */
-+    printk(KERN_INFO "yat_casched: CPU offline cleanup completed\n");
++    /*
++     * 只清理**本 CPU 自己**的那张历史表。
++     *
++     * 原实现调用 yat_destroy_history_tables(yat_rq->history_tables)
++     * 会把该 rq 内嵌的 NR_CPUS 张表全部清空（内嵌副本已在 A5 中删除）。
++     * 现在历史表只有全局一份，按 CPU 下标清理本核即可；
++     * 全局结构（ready_pool / accel_table / default_dag）绝不在此释放。
++     */
++    int cpu = rq->cpu;
++
++    if (cpu >= 0 && cpu < NR_CPUS) {
++        struct yat_history_record *rec, *tmp;
++        LIST_HEAD(doomed);
++
++        yat_detach_history_records(&global_history_tables[cpu], &doomed);
++        list_for_each_entry_safe(rec, tmp, &doomed, list) {
++            list_del(&rec->list);
++            kfree(rec);
++        }
++    }
 +}
 +
 +struct task_struct *pick_task_yat_casched(struct rq *rq)
@@ -1292,184 +2146,257 @@ Upstream: linux v6.8 (torvalds)
 +    return (recency * 1000) / max_recency;
 +}
 +
-+/* 计算多层缓存recency */
++/*
++ * 计算多层缓存 recency。
++ *
++ * 原实现每次调用都 kmalloc(NR_CPUS * sizeof(int), GFP_ATOMIC) 来构造一个
++ * `all_cpus[i] = i` 的恒等数组，然后交给 yat_get_max_last_exec_time() /
++ * yat_sum_exec_time_multi() 遍历。而这个函数又被
++ * yat_find_best_core_for_job() 按「每个 online CPU」调用一次，于是
++ * 一次全局调度就要做 nr_cpus * 2 次原子分配（64 核 = 128 次）。
++ *
++ * 这里直接改成对「当前 online CPU」原地遍历，不需要任何临时数组：
++ * 分配次数从 O(nr_cpus^2) 降到 0。同时把范围从 NR_CPUS 收紧到
++ * for_each_online_cpu()，离线 CPU 的历史表不再被无意义扫描。
++ */
 +u64 yat_calculate_recency(int job_id, int cpu_id, u64 now)
 +{
 +    u64 l1_recency = 0, l2_recency = 0, l3_recency = 0;
-+    u64 l1_last, l2_last, l3_last;
-+    int *all_cpus;
-+    int i;
-+    
-+    /* 动态分配CPU数组以避免栈溢出 */
-+    all_cpus = kmalloc(NR_CPUS * sizeof(int), GFP_ATOMIC);
-+    if (!all_cpus) {
-+        /* 如果分配失败，只计算L1缓存新鲜度 */
-+        l1_last = yat_get_task_last_timestamp(cpu_id, job_id);
-+        if (l1_last > 0)
-+            l1_recency = yat_sum_exec_time_since(cpu_id, l1_last, now);
-+        return l1_recency;
-+    }
-+    
-+    /* L1层（私有缓存）：单个CPU */
++    u64 l1_last, l2_last;
++    int cpu;
++
++    /* L1 层（私有缓存）：只看本 CPU */
 +    l1_last = yat_get_task_last_timestamp(cpu_id, job_id);
 +    if (l1_last > 0)
 +        l1_recency = yat_sum_exec_time_since(cpu_id, l1_last, now);
-+    
-+    /* L2层（共享缓存）：简化为所有CPU共享L2 */
-+    for (i = 0; i < NR_CPUS; i++)
-+        all_cpus[i] = i;
-+    l2_last = yat_get_max_last_exec_time(job_id, all_cpus, NR_CPUS);
-+    if (l2_last > 0)
-+        l2_recency = yat_sum_exec_time_multi(all_cpus, NR_CPUS, l2_last, now);
-+    
-+    /* L3层（全局共享缓存）：与L2相同，简化处理 */
-+    l3_last = l2_last;
++
++    /*
++     * L2 层（共享缓存）：扫所有 online CPU，取「最近一次执行时间戳」
++     * 的最大值，再累加该时间点之后的执行时间。
++     */
++    l2_last = 0;
++    for_each_online_cpu(cpu) {
++        u64 ts = yat_get_task_last_timestamp(cpu, job_id);
++
++        if (ts > l2_last)
++            l2_last = ts;
++    }
++    if (l2_last > 0) {
++        for_each_online_cpu(cpu)
++            l2_recency += yat_sum_exec_time_since(cpu, l2_last, now);
++    }
++
++    /* L3 层（全局共享缓存）：与 L2 相同，简化处理 */
 +    l3_recency = l2_recency;
-+    
-+    kfree(all_cpus);
++
 +    return l1_recency + l2_recency + l3_recency;
 +}
 +
-+/* 计算Impact（简化实现） */
++/*
++ * 计算 Impact（简化实现）。
++ *
++ * 读取的是「别的 CPU」的 rq->yat_casched.nr_running，而本函数运行在
++ * CPU0 的 rq_lock 之下，拿不到目标 CPU 的 rq_lock。这里用 READ_ONCE()
++ * 做无锁读：该字段是 unsigned int，取值只用于比较大小，读到相邻两次
++ * 更新之间的任意值都不影响正确性；但必须让编译器/工具链明确这不是
++ * 一次可以随意合并或重排的普通读。
++ */
 +u64 yat_calculate_impact(struct yat_job *job, int core)
 +{
-+    /* 简化实现：Impact = 当前核心上等待队列长度 * 平均执行时间 */
 +    struct yat_casched_rq *yat_rq = &cpu_rq(core)->yat_casched;
-+    return yat_rq->nr_running * job->wcet;
++
++    return (u64)READ_ONCE(yat_rq->nr_running) * job->wcet;
 +}
 +
-+/* 为作业寻找最佳核心 - AJLR核心算法 */
++/*
++ * 为作业寻找最佳核心 —— AJLR 核心算法。
++ *
++ * 原实现是「两轮 for_each_online_cpu + 用全局加速表在两轮之间传递
++ * benefit」。三个问题：
++ *
++ *   1. 第一轮对**每个** online CPU 调一次 yat_accel_table_insert()，
++ *      每次一次 kmalloc(GFP_ATOMIC) —— 64 核下每次全局调度 64 次
++ *      原子分配，且全在持 rq_lock 的热路径上。
++ *   2. 加速表被当作「同一函数内两轮之间的临时数组」使用，语义错位：
++ *      它本应是跨调度周期复用的统计缓存，却被当栈变量使，条目被反复
++ *      覆盖、命中率不具意义。
++ *   3. yat_calculate_recency() 内部还有两次 for_each_online_cpu，
++ *      两轮外层遍历 → 整体 O(nr_cpus^2) 次历史表加锁扫描。
++ *
++ * 改为单遍扫描：算出 benefit，相等时用 Impact 破平。收益：
++ *   - 原子分配：nr_cpus → 0（只在最后为选中的核心写一条遥测）
++ *   - 历史表扫描：2 * nr_cpus^2 → nr_cpus
++ * 加速表只记录「最终选中的 (job, cpu, benefit, crp)」快照，回归它作为
++ * 可观测性缓存的本来用途，不再承担控制流职责。
++ */
 +int yat_find_best_core_for_job(struct yat_job *job)
 +{
 +    int best_core = YAT_INVALID_CORE;
 +    u64 max_benefit = 0;
 +    u64 min_impact = ULLONG_MAX;
++    u64 best_crp_ratio = 0;
 +    u64 current_benefit, current_impact;
 +    u64 recency, crp_ratio;
 +    u64 now = ktime_get_ns();
 +    int cpu;
 +    
-+    /* 第一轮：比拼Benefit */
 +    for_each_online_cpu(cpu) {
-+        /* 计算recency和benefit */
 +        recency = yat_calculate_recency(job->job_id, cpu, now);
 +        crp_ratio = yat_get_crp_ratio(recency);
 +        current_benefit = ((1000 - crp_ratio) * job->wcet) / 1000;
 +        
++        if (current_benefit < max_benefit)
++            continue;
++        
 +        if (current_benefit > max_benefit) {
++            /* 新的最优 benefit：接管，Impact 立即可比 */
 +            max_benefit = current_benefit;
++            best_crp_ratio = crp_ratio;
++            best_core = cpu;
++            min_impact = yat_calculate_impact(job, cpu);
++            continue;
 +        }
 +        
-+        /* 更新加速表 */
-+        if (global_accel_table) {
-+            yat_accel_table_insert(global_accel_table, job->job_id, cpu, 
-+                                 current_benefit, job->wcet, crp_ratio);
++        /* benefit 相同：用 Impact 破平，取更空闲的核心 */
++        current_impact = yat_calculate_impact(job, cpu);
++        if (current_impact < min_impact) {
++            min_impact = current_impact;
++            best_core = cpu;
 +        }
 +    }
 +    
-+    /* 第二轮：在最大Benefit集合中比拼Impact */
-+    for_each_online_cpu(cpu) {
-+        if (global_accel_table) {
-+            current_benefit = yat_accel_table_lookup(global_accel_table, 
-+                                                   job->job_id, cpu);
-+        } else {
-+            /* 重新计算benefit */
-+            recency = yat_calculate_recency(job->job_id, cpu, now);
-+            crp_ratio = yat_get_crp_ratio(recency);
-+            current_benefit = ((1000 - crp_ratio) * job->wcet) / 1000;
-+        }
-+        
-+        if (current_benefit == max_benefit) {
-+            current_impact = yat_calculate_impact(job, cpu);
-+            if (current_impact < min_impact) {
-+                min_impact = current_impact;
-+                best_core = cpu;
-+            }
-+        }
++    /*
++     * 遥测：只记最终选中核心的快照。失败（-ENOMEM/-EEXIST）不影响
++     * 调度决策 —— 调度器不依赖这张表。
++     */
++    if (best_core != YAT_INVALID_CORE && global_accel_table)
++        yat_accel_table_insert(global_accel_table, job->job_id, best_core,
++                               max_benefit, job->wcet, best_crp_ratio);
++
++    /*
++     * 与上面的 accel 写入刻意分开：accel 表可能因内存不足而失败，
++     * 但「本次确实完成了分配」这一事实必须被统计到。jobs_placed 与
++     * accel_inserts 的差值就是加速表分配失败的次数。
++     */
++    if (best_core != YAT_INVALID_CORE) {
++        YAT_STAT_INC(jobs_placed);
++        trace_yat_casched_place(job->job_id, best_core, max_benefit,
++                                best_crp_ratio, job->wcet);
 +    }
 +    
 +    return best_core;
 +}
 +
-+/* 更新就绪池：检查所有活动DAG，将满足依赖的作业移入就绪池 */
++/*
++ * 更新就绪池：遍历所有活动 DAG，把依赖已满足的作业投入就绪池。
++ *
++ * 锁序：global_dag_lock -> dag->lock -> pool->lock（yat_ready_pool_enqueue
++ * 内部取 pool->lock），与文件头的加锁规则一致。
++ *
++ * 关于「原地修改导致遍历错乱」：yat_ready_pool_enqueue() 只修改
++ * job->ready_list 与 job->state，**不会**动 dag->jobs 链表，
++ * 因此在 list_for_each_entry(dag->jobs) 内部调用它是安全的
++ * （它改的是另一条链表）。
++ *
++ * 上一版这里的 printk 已换成 pr_err/pr_warn 或直接吞掉：
++ * 调度热路径上的 printk 会同步到控制台、可能触发 sleep，在持 rq_lock、
++ * 可能关中断的上下文里既违规又严重扰动时序。
++ */
 +void yat_update_ready_pool(struct yat_casched_rq *rq)
 +{
 +    struct yat_dag_task *dag;
 +    struct yat_job *job;
-+    
-+    if (!rq) {
-+        printk(KERN_ERR "yat_casched: yat_update_ready_pool called with NULL rq\n");
++    struct yat_ready_job_pool *pool;
++
++    if (!rq)
 +        return;
-+    }
-+    
-+    if (!rq->ready_pool) {
-+        printk(KERN_ERR "yat_casched: ready_pool is NULL in yat_update_ready_pool\n");
++
++    pool = rq->ready_pool;
++    if (!pool)
 +        return;
-+    }
-+    
++
 +    spin_lock(&global_dag_lock);
 +    list_for_each_entry(dag, &global_dag_list, dag_list) {
 +        spin_lock(&dag->lock);
 +        list_for_each_entry(job, &dag->jobs, job_list) {
-+            if (job->state == YAT_JOB_WAITING && job->pending_predecessors == 0) {
-+                yat_ready_pool_enqueue(rq->ready_pool, job);
-+            }
++            if (job->state == YAT_JOB_WAITING && job->pending_predecessors == 0)
++                yat_ready_pool_enqueue(pool, job);
 +        }
 +        spin_unlock(&dag->lock);
 +    }
 +    spin_unlock(&global_dag_lock);
 +}
 +
-+/* AJLR主调度函数 */
++/*
++ * AJLR 主调度函数：把就绪池里的作业分配给核心。
++ *
++ * 修复的 TOCTOU：原实现先 yat_ready_pool_peek() 拿到队头作业，再
++ * yat_find_best_core_for_job() 算核心（这一步要遍历所有 CPU 的历史表，
++ * 可能耗时），最后才 yat_ready_pool_dequeue()。在 peek 与 dequeue 之间
++ * 就绪池的队头完全可能被别的路径换掉 —— dequeue 弹出的会是**另一个**
++ * 作业，而 best_core 是按前一个作业算出来的，结果是「作业 A 的核心
++ * 分配记录写进了作业 B」。而且 peek 那次没弹出，循环里也没人计数，
++ * 一旦队头作业找不到核心就直接 break，不会死循环，但已足够错配。
++ *
++ * 现在改为「一次性原子取出队头」：yat_ready_pool_dequeue() 内部持
++ * pool->lock 完成 list_first_entry + list_del_init，返回的就是本次
++ * 要处理的作业；找不到核心时用 enqueue 放回（enqueue 会按优先级重新
++ * 插位并恢复 state=READY，语义等价于"未取出"）。
++ */
 +void yat_schedule_ajlr(struct yat_casched_rq *rq)
 +{
 +    struct yat_job *job;
++    struct yat_ready_job_pool *pool;
 +    int best_core;
-+    u64 now = ktime_get_ns();
-+    
-+    if (!rq) {
-+        printk(KERN_ERR "yat_casched: yat_schedule_ajlr called with NULL rq\n");
++    int guard = 0;
++
++    if (!rq)
 +        return;
-+    }
-+    
-+    if (!rq->ready_pool) {
-+        printk(KERN_ERR "yat_casched: ready_pool is NULL in yat_schedule_ajlr\n");
++
++    pool = rq->ready_pool;
++    if (!pool)
 +        return;
-+    }
-+    
++
 +    /* 1. 更新就绪池 */
 +    yat_update_ready_pool(rq);
-+    
-+    /* 2. 循环分配：只要就绪池不空且有空闲核心，就持续进行分配 */
-+    while (!yat_ready_pool_empty(rq->ready_pool)) {
-+        
-+        /* 3. 从就绪池头部取出最高优先级的作业 */
-+        job = yat_ready_pool_peek(rq->ready_pool);
++
++    /*
++     * 2. 循环分配。
++     *    guard 是防御性的：理论上每轮都会 dequeue 掉一个作业，
++     *    但若某条路径忘了把 state 改回 WAITING，就绪池可能反复投喂
++     *    同一个作业 —— 加个上限保证 balance 回调永不死循环，
++     *    这比"调度器偶发挂死在软中断里"好得多。
++     */
++    while (guard++ < YAT_BALANCE_MAX_BATCH) {
++        /* 3. 原子取出就绪池队头（不再是 peek + 后续 dequeue 两步） */
++        job = yat_ready_pool_dequeue(pool);
 +        if (!job)
 +            break;
-+        
++
 +        /* 4. 为作业寻找最佳核心 */
 +        best_core = yat_find_best_core_for_job(job);
-+        
-+        /* 5. 如果找到了合适的核心 */
-+        if (best_core != YAT_INVALID_CORE) {
-+            /* 5.1 分配作业并移出就绪池 */
-+            yat_ready_pool_dequeue(rq->ready_pool);
-+            
-+            /* 5.2 更新历史表 */
-+            yat_add_history_record(best_core, job->job_id, now, job->wcet);
-+            job->per_cpu_last_ts[best_core] = now;
-+            
-+            /* 5.3 如果作业有对应的Linux任务，调度它 */
-+            if (job->task && best_core == smp_processor_id()) {
-+                /* 在当前CPU上直接调度 */
-+                resched_curr(cpu_rq(best_core));
-+            }
-+            
-+        } else {
-+            /* 如果当前最高优先级的作业都找不到核心，则退出循环 */
++
++        if (best_core == YAT_INVALID_CORE) {
++            /*
++             * 找不到核心：放回就绪池，本轮结束（下次 balance 再试）。
++             * 该计数持续增长说明「就绪作业数 > 可用核心数」，即过载，
++             * 与 balance_skips 一起可用于判断是否该缩小批量上限。
++             */
++            YAT_STAT_INC(jobs_nocore);
++            yat_ready_pool_enqueue(pool, job);
 +            break;
 +        }
++
++        /*
++         * 5. 分配完成。
++         *
++         * 这里**不再**写 yat_add_history_record(…, job->wcet)：
++         * 那是把"预计执行时间"当成"已经执行了这么久"记进历史表，
++         * 会让 yat_sum_exec_time_since() 凭空多出大量虚假执行时间，
++         * CRP 比率被系统性拉偏。真实执行区间由 put_prev_task() 记账。
++         */
++        if (job->task && best_core == raw_smp_processor_id())
++            resched_curr(cpu_rq(best_core));
 +    }
 +}
 +
@@ -1510,20 +2437,45 @@ Upstream: linux v6.8 (torvalds)
 +    job->task = NULL;
 +}
 +
-+/* 检查CPU是否空闲 */
-+/* 创建默认DAG用于传统任务 */
++/*
++ * 取「传统任务的默认 DAG」。
++ *
++ * 原实现是函数内 static 指针 + 惰性初始化：
++ *
++ *	static struct yat_dag_task *default_dag = NULL;
++ *	if (!default_dag)
++ *		default_dag = yat_create_dag(...);   // GFP_KERNEL
++ *
++ * 两个致命问题：
++ *   1. 无锁 check-then-act：两个 CPU 同时首次入队会各建一个 DAG，
++ *      其中一个指针被覆盖 → 泄漏，且它的作业永远不属于「默认 DAG」。
++ *   2. yat_create_dag() 用 GFP_KERNEL，而本函数唯一的调用者
++ *      yat_ajlr_enqueue_task() 跑在「持 rq_lock、可能关中断」的
++ *      enqueue_task 回调里 → 睡眠式分配，直接触发
++ *      "BUG: sleeping function called from invalid context"。
++ *
++ * 改为：默认 DAG 与其它全局结构一起在 init_yat_casched_rq() 的
++ * 单线程初始化阶段建好（那里是进程上下文，GFP_KERNEL 合法）；
++ * 本函数退化为一次无锁读。初始化失败时返回 NULL，调用者放弃绑定
++ * 作业，而不是在原子上下文里重试分配。
++ */
 +static struct yat_dag_task *yat_get_default_dag(void)
 +{
-+    static struct yat_dag_task *default_dag = NULL;
-+    
-+    if (!default_dag) {
-+        default_dag = yat_create_dag(0, YAT_MAX_DAG_PRIORITY / 2); /* 中等优先级 */
-+    }
-+    
-+    return default_dag;
++    return READ_ONCE(global_default_dag);
 +}
 +
-+/* 任务入队时的AJLR处理 */
++/*
++ * 任务入队时的 AJLR 处理。
++ *
++ * 上下文：核心调度器持 rq_lock 调用 enqueue_task → 本函数。因此这里
++ * **只能**用原子分配，且不应有 printk（每次调度都刷屏会严重扰动
++ * 调度时序，A6 会改为 tracepoint）。原先的每任务 INFO 日志已移除。
++ *
++ * 关于 rt_priority：它是 RT 调度类的优先级字段，用
++ * sched_setscheduler(policy=SCHED_YAT_CASCHED) 设置的任务并不会填它
++ * （保持 0）。这里保留读取是为了兼容早期通过 rt_priority 传优先级的
++ * 测试程序；对常规任务它等价于「中等优先级」，属已知局限。
++ */
 +static void yat_ajlr_enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 +{
 +    struct yat_job *job;
@@ -1532,56 +2484,52 @@ Upstream: linux v6.8 (torvalds)
 +    
 +    /* 检查任务是否已有关联的作业 */
 +    if (!p->yat_casched.job) {
-+        /* 获取默认DAG */
 +        default_dag = yat_get_default_dag();
 +        if (!default_dag)
 +            return;
 +        
-+        /* 获取用户设置的优先级 - 关键修复点 */
-+        user_priority = p->rt_priority;  /* 直接使用rt_priority字段 */
++        user_priority = p->rt_priority;
 +        
-+        /* 为新任务创建作业，使用用户设置的优先级 */
-+        job = yat_create_job(p->pid, user_priority, 1000000, default_dag);  /* 默认1ms WCET */
++        /*
++         * GFP_ATOMIC：调用者已持 rq_lock（可能关中断），不能用
++         * GFP_KERNEL。分配失败就放弃绑定 —— 调度器对 job == NULL
++         * 已有处理路径，任务照常参与调度。
++         */
++        job = __yat_create_job(p->pid, user_priority, 1000000, default_dag,
++                               GFP_ATOMIC);  /* 默认 1ms WCET */
 +        if (job) {
 +            p->yat_casched.job = job;
 +            job->task = p;
-+            
-+            printk(KERN_INFO "yat_casched: Task PID %d enqueued with priority %d (rt_priority=%d)\n", 
-+                   p->pid, user_priority, p->rt_priority);
 +        }
 +    } else {
 +        /* 如果作业已存在，更新优先级 */
-+        user_priority = p->rt_priority;
-+        p->yat_casched.job->job_priority = user_priority;
-+        
-+        printk(KERN_INFO "yat_casched: Task PID %d priority updated to %d\n", 
-+               p->pid, user_priority);
++        p->yat_casched.job->job_priority = p->rt_priority;
 +    }
 +}
 +
-+/* 任务出队时的AJLR处理 */
++/*
++ * 任务出队时的 AJLR 处理。
++ *
++ * 这里**不再**添加历史记录。原因：本调度类把「本次运行了多久」的记账
++ * 放在 put_prev_task_yat_casched() 里做（那里能拿到精确的
++ * now - se.exec_start）。此处再按 sum_exec_runtime - prev_sum_exec_runtime
++ * 记一条，等于把同一段执行时间统计两次，recency 被系统性放大，
++ * yat_get_crp_ratio() 随之上偏，调度决策会被污染。
++ *
++ * 唯一的动作是把作业从全局就绪池摘掉，避免「任务已睡眠但作业仍挂在
++ * pool->head 上」被 yat_schedule_ajlr() 反复选中。若作业此刻已是
++ * RUNNING 状态，yat_ready_pool_dequeue() 已做过 list_del_init()，
++ * yat_ready_pool_remove() 内部会检测空链表，是空操作。
++ */
 +static void yat_ajlr_dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 +{
-+    /* 更新作业的最后执行时间戳 */
-+    if (p->yat_casched.job) {
-+        p->yat_casched.job->per_cpu_last_ts[rq->cpu] = ktime_get_ns();
-+        
-+        /* 添加历史记录 */
-+        if (p->se.sum_exec_runtime > p->se.prev_sum_exec_runtime) {
-+            u64 exec_time = p->se.sum_exec_runtime - p->se.prev_sum_exec_runtime;
-+            yat_add_history_record(rq->cpu, p->yat_casched.job->job_id,
-+                                 ktime_get_ns(), exec_time);
-+        }
++    struct yat_job *job = p->yat_casched.job;
 +
-+        /*
-+         * 任务离开运行队列时同步把其作业从全局就绪池摘除，避免
-+         * 「任务已睡眠但作业仍挂在 pool->head 上」被 select_task_rq/
-+         * yat_schedule_ajlr 反复选中。若作业当前为 RUNNING 状态，
-+         * yat_ready_pool_dequeue 已做过 list_del_init，此处为空操作。
-+         */
-+        if (rq->yat_casched.ready_pool)
-+            yat_ready_pool_remove(rq->yat_casched.ready_pool, p->yat_casched.job);
-+    }
++    if (!job)
++        return;
++
++    if (rq->yat_casched.ready_pool)
++        yat_ready_pool_remove(rq->yat_casched.ready_pool, job);
 +}
 +
 +/* 创建测试用的DAG和作业 */
