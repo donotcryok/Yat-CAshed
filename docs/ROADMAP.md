@@ -19,7 +19,7 @@
 | ~~**P0**~~ | ~~解决 `yat_casched.c` 合并冲突~~ | ✅ **已完成（A1）** | — |
 | **P1** | 文档与目录工程化（方向 C） | ✅ 门禁/CHANGELOG/CONTRIBUTING/CI 已完成 | 命名统一、两份「完整实现文档」归档、LICENSE 澄清 |
 | **P1** | 构建与 CI | ✅ **已完成（A2 / B1 / B2）** | — |
-| **P2** | 内核模块质量（A4–A8） | ✅ 主体完成 | A4–A7 已完成；A8（AJLR 决策落地）已接线，**实测待跑** |
+| **P2** | 内核模块质量（A4–A8） | ✅ 已完成 | A4–A7 已完成；A8 已接线并**实跑通过**（接管率 98%，见本文 §A8.1） |
 | **P2** | 模拟器工程化（B3–B4） | ✅ 已完成 | B3 参数外置与 CSV schema 文档已收口 |
 | **P3** | 算法与研究深化（D1'–D9'） | ⏳ 待启动 | **先修度量**：D1' 真实代价模型 → D2' trace 负载 → D8' 仿真↔内核一致性 |
 
@@ -171,14 +171,22 @@
    > 或 `select_fallback_rq()` 推翻。只看 `_place` 会高估 AJLR 的实际影响力。
 
 2. **4 个 debugfs 节点**（`/sys/kernel/debug/yat_casched/`）：
-   - `stats`：7 项 per-CPU 计数器求和 —— `balance_runs` / `balance_skips` /
-     `jobs_placed` / `jobs_nocore` / `history_records` / `accel_inserts` / `accel_dup`，
-     外加 `nr_cpu_ids` 便于确认 SMP 是否真的生效；
+   - `stats`：per-CPU 计数器求和（A8 后扩到 **27 项**，按决策链路分组）——
+     负载均衡 `balance_runs/balance_skips/jobs_placed/jobs_nocore`；
+     历史与加速表 `history_records/accel_inserts/accel_dup`；
+     选核回调 `select_calls/select_not_ttwu/select_nojob/select_sticky_idle/
+     select_sticky_interval/select_nocore/select_decided`；
+     唤醒链路 `ttwu_state_bail/ttwu_runnable/ttwu_wakelist/ttwu_ok`；
+     入队出队 `enq_calls/enq_cpus_allowed/deq_calls/deq_sleep`；
+     选取 `pick_calls/pick_null_desync`；
+     接管率 `place_hit/place_miss/place_pending`；
+     外加 `nr_cpu_ids` 便于确认 SMP 是否真的生效。逐项读法见
+     [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.1.1；
    - `ready_pool`：就绪池快照（作业 ID、任务 PID、优先级、DAG 优先级、WCET、状态）；
    - `dags`：DAG 列表与每个 DAG 内作业的 waiting / ready / running 分布；
    - `placements`：`job_id pid prio assigned actual verdict` + `ok/denied/pending` 汇总。
-     `jobs_placed` 只回答「算过几次」，`placements` 才回答「算完有没有被采纳」——
-     AJLR 的真实接管率只能看后者。
+     注意它是**实时快照**：任务退出时 job 被 `.task_dead` 释放，workload 结束后必然为空。
+     可留存的接管率证据是 `place_hit/place_miss/place_pending` 累计值。
 
    注册方式：`late_initcall(yat_debugfs_init)` —— debugfs 本身是 `core_initcall`，
    在 `sched_init()` 时还不存在，所以只能在 `late_initcall` 阶段挂节点。
@@ -202,8 +210,10 @@
   - `.gitignore` 相应补齐 `test_with_programs_build/`、`yat_test_scripts/results/` 等条目。
 - ✅ **新增负载基准** `boot_test_scripts/yat_bench.c`：N 进程 × M 次固定工作量，
   输出机器可解析的单行 `YATCSV,policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,
-  max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online`，
+  max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online,affinity,sleep_us`，
   退出码 `0` 成功 / `2` 调用失败 / `3` 内核无该调度类。
+  末尾两列是 A8 追加的**自描述列**（加在行尾，旧列位置不变），用于事后判断
+  这组数据能否评价 AJLR。
 - ✅ **新增自动对比脚本** `yat_test_scripts/compare_cfs_vs_yat.sh`：
   - 同一份内核镜像、同一份 initramfs、同一份 `yat_bench` 二进制；
   - 通过内核命令行 `yatbench=cfs|yat` 让 guest 侧在启动时切换策略 ——
@@ -217,7 +227,7 @@
 - ✅ **Makefile 接线**：新增 `kernel-obj` / `kernel-build` / `kernel-bench` / `kernel-compare`
   四个目标，从仓库根目录即可驱动。
 
-**实测数据**（`--iters 2000000 --tasks 4 --cpus 4`，TCG 模拟，单次运行）：
+**实测数据（⚠️ 已作废，保留仅为记录）**：
 
 ```csv
 policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online
@@ -225,8 +235,15 @@ cfs,4,2000000,0,228582740,15985290,77244970,8000000,0,55,4
 yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
 ```
 
-墙钟时间比 `yat/cfs ≈ 0.268`，非自愿上下文切换 `55 → 7`。
-`sum_work_units` 两轮均为 8000000（= 4 × 2000000），确认负载真的跑完。
+这组数据（`yat/cfs ≈ 0.268`）是在 **A8 之前**采集的，当时默认 `--affinity shared`
+把每个任务都 pin 到单核且从不阻塞，`select_task_rq` 根本不会调用调度类；
+更关键的是 A8 实跑时才发现 yat 类在那个阶段**连一个任务都没有**
+（`__normal_prio()` 把 yat 优先级映射进了实时区间，任务被挂到 `rt_sched_class`）。
+因此「yat 快 4 倍」既不是 AJLR 的效果，也**不代表 yat 调度类本身**的效果。
+
+当前有效数据见本文 §A8.1：AJLR 接管率 98%，
+但墙钟约为 CFS 的 **1.9–2.2 倍**。历史数据的正确读法见
+[`CONFLICT_ANALYSIS.md`](CONFLICT_ANALYSIS.md) §8.7.5–§8.7.6。
 
 **必须带上的限定（诚实披露）**：那轮实测的 debugfs 显示
 `jobs_placed=0`、`history_records=0`、`accel_inserts=0`，而 `balance_runs` 非零。

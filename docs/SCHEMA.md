@@ -85,20 +85,62 @@
 
 ## 2. 内核性能测试 CSV
 
-**文件路径**：`linux-6.8-main/test_visualization/performance_results.csv`
+内核侧与模拟器 CSV **完全无关**，不要混用或交叉对比两套数字。
+内核侧目前有**两套**产物：现行版与遗留版。
 
-这是**内核侧**（CFS vs Yat-CAShed 真实运行）的数据，与上面的模拟器 CSV 无关，
-不要混用或对比两套数字。
+### 2.1 现行：`linux-6.8-main/yat_test_scripts/results/cfs_vs_yat.csv`
 
-| # | 列名 | 类型 | 精度 | 含义 |
-|---|------|------|------|------|
-| 1 | `Scheduler` | string | — | `CFS` 或 `Yat-CAShed` |
-| 2 | `Thread_ID` | int | — | 测试线程编号 |
-| 3 | `CPU_Switches` | int | — | 该线程被迁移/切换的 CPU 次数 |
-| 4 | `Execution_Time` | float | `%.3f` | 执行耗时（秒） |
-| 5 | `CPU_Affinity_Score` | float | `%.3f` | CPU 亲和性得分 `[0,1]` |
+由 `compare_cfs_vs_yat.sh` 生成，每次运行**两行**（cfs 一行、yat 一行），
+两轮是独立 QEMU 进程，唯一变量是调度策略。
 
-行序：按 `Thread_ID` 分组，组内 `CFS` 在前、`Yat-CAShed` 在后（配对比较的前提）。
+| # | 列名 | 类型 | 含义 |
+|---|------|------|------|
+| 1 | `policy` | string | `cfs` 或 `yat` |
+| 2 | `tasks` | int | 并发子进程数 |
+| 3 | `iters` | int | 每任务固定迭代次数 |
+| 4 | `cpu` | int | `--affinity shared` 时 pin 到的 CPU（其它模式仅为记录） |
+| 5 | `sum_wall_ns` | int | 全部任务墙钟之和（ns），**主指标** |
+| 6 | `min_wall_ns` | int | 最快任务的墙钟（ns） |
+| 7 | `max_wall_ns` | int | 最慢任务的墙钟（ns） |
+| 8 | `sum_work_units` | int | 实际完成的工作量（应等于 `tasks × iters`，用于自检） |
+| 9 | `vol_ctx` | int | 自愿上下文切换（合计） |
+| 10 | `invol_ctx` | int | 非自愿上下文切换（合计） |
+| 11 | `cpus_online` | int | guest 在线 CPU 数（应为 `--cpus` 的值） |
+| 12 | `affinity` | string | `shared` / `none` / `spread` |
+| 13 | `sleep_us` | int | 每段计算后的 nanosleep 微秒数 |
+
+说明：第 12、13 列是 A8 阶段**追加在行尾**的自描述列，旧列位置保持不变，
+因此历史脚本按固定索引取 1–11 列仍然有效。共 **13 列**。
+
+**行序**：固定为 `cfs` 在前、`yat` 在后，便于配对比较。
+
+**这两个字段回答「这组数据能不能评价 AJLR」**：只有 `affinity != shared`
+且 `sleep_us > 0` 时，`select_task_rq` 才会被调用、才有 `WF_TTWU` 唤醒；
+否则数据只能谈「同核时间片分配」。脚本会自动判定并打印 ⚠️ / ✅。
+
+### 2.2 不在 CSV 中的观测（debugfs 计数器）
+
+AJLR 的接管率等指标来自 `debugfs /sys/kernel/debug/yat_casched/stats`，
+由脚本 dump 到串口日志并打印成摘要，**不写入 CSV**（它们是计数值，不是采样点）。
+关键字段：`ttwu_ok`、`select_decided`、`jobs_placed`、
+`place_hit / place_miss / place_pending`、`pick_null_desync`。
+读法见 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.1.1。
+
+### 2.3 遗留：`test_visualization/performance_results.csv`
+
+早期 `test_visualization/performance_test.c` 的产物，**不再由现行流程生成**，
+仅作为历史资料保留：
+
+| # | 列名 | 类型 | 含义 |
+|---|------|------|------|
+| 1 | `Scheduler` | string | `CFS` 或 `Yat-CAShed` |
+| 2 | `Thread_ID` | int | 测试线程编号 |
+| 3 | `CPU_Switches` | int | 该线程被迁移/切换的 CPU 次数 |
+| 4 | `Execution_Time` | float | 执行耗时（秒） |
+| 5 | `CPU_Affinity_Score` | float | CPU 亲和性得分 `[0,1]` |
+
+该文件的数字采集于 A8 之前（当时 `select_task_rq` 不参与、yat 类内可能没有任务），
+**不可用于任何结论**，详见 [`ROADMAP.md`](ROADMAP.md) §A7 的「已作废数据」说明。
 
 ---
 
