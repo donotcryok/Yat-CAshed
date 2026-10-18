@@ -81,6 +81,8 @@ sudo apt install -y busybox-static gcc cpio gzip qemu-system-x86
 ./compare_cfs_vs_yat.sh                       # 默认 4 任务 / 2000 万次迭代 / CPU0
 ./compare_cfs_vs_yat.sh --iters 5000000 --tasks 8
 ./compare_cfs_vs_yat.sh --iters 2000000 --timeout 600 --cpus 4
+# 验证 A8（AJLR 是否真的接管选核）：必须可跨核 + 有唤醒
+./compare_cfs_vs_yat.sh --tasks 8 --iters 2000000 --affinity none --sleep-us 200
 ./compare_cfs_vs_yat.sh --help
 ```
 
@@ -88,21 +90,31 @@ sudo apt install -y busybox-static gcc cpio gzip qemu-system-x86
 |------|------|------|
 | `--tasks N` | 4 | 并行子进程数 |
 | `--iters N` | 20000000 | 每个子进程的迭代次数 |
-| `--cpu N` | 0 | 所有子进程 pin 到哪个 CPU |
+| `--cpu N` | 0 | `--affinity shared` 时所有子进程 pin 到哪个 CPU |
+| `--affinity M` | `shared` | `shared`（同核竞争）/ `none`（可跨核，**A8 必需**）/ `spread`（第 i 个任务上第 i 个核） |
+| `--sleep-us U` | 0 | 每段计算后 `nanosleep` U 微秒，制造真实 `WF_TTWU`；`0` 时只有 `WF_FORK`，**A8 不会触发** |
 | `--cpus N` | 4 | QEMU `-smp` 值（guest 的 CPU 数） |
 | `--kernel PATH` | `arch/x86/boot/bzImage` | 内核镜像；传 `*/vmlinux` 会自动改指 bzImage |
 | `--timeout N` | 180 | 单轮 QEMU 超时（秒） |
 | `--out DIR` | `results/` | 输出目录 |
+
+> **两个前提缺一不可**：`shared` 会把 `p->nr_cpus_allowed` 压到 1，
+> `core.c` 的 `select_task_rq` 包装层直接 `cpumask_any()` 返回，**不会调用调度类**；
+> `sleep-us 0` 则没有任何唤醒事件。两者任一为默认值时，数据只能谈「同核时间片分配」，
+> 不能用来评价 AJLR —— 脚本会自动打印 ⚠️ 提示。
 
 ### 输出
 
 `results/cfs_vs_yat.csv`：
 
 ```csv
-policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online
-cfs,4,2000000,0,228582740,15985290,77244970,8000000,0,55,4
-yat,4,2000000,0,61304740,12182720,19416740,8000000,0,7,4
+policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online,affinity,sleep_us
+cfs,8,2000000,0,1703598000,186170220,246277770,16000000,475,161,4,none,200
+yat,8,2000000,0,3303452310,276935770,611904480,16000000,459,56,4,none,200
 ```
+
+后两列 `affinity` / `sleep_us` 是 A8 追加的**自描述列**（追加在行尾，旧列位置不变），
+用于事后判断这组数据能否谈 AJLR。
 
 以及每轮完整串口日志 `results/qemu_cfs.log`、`results/qemu_yat.log`。
 

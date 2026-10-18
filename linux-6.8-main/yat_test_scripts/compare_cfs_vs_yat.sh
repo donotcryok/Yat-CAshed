@@ -25,6 +25,22 @@
 #   yat_test_scripts/results/qemu_<policy>.log —— 两次启动的完整串口日志
 #   标准输出：配对对比摘要（墙钟比、上下文切换差）
 #
+# 亲和性（A8 起必须分清，否则会得出错误结论）：
+#   --affinity shared（默认）  全部任务 pin 到一个核 → 同核竞争。
+#     此时 p->nr_cpus_allowed == 1，core.c 的 select_task_rq 直接
+#     cpumask_any()、**不调用调度类回调**，所以 AJLR 一次也不会跑。
+#     这类数据只能谈"时间片分配"，**不能**谈 AJLR。
+#   --affinity none            不设亲和性 → 可跨核，select_task_rq 才会
+#     被调用；配合 --sleep-us 制造 WF_TTWU，才能真的验证 A8。
+#   --affinity spread          第 i 个任务 pin 到第 i%在线数 个核 → 强制
+#     初始分散，观察 AJLR 是否会把它们重新收敛（迁移率）。
+#
+# 为什么需要 --sleep-us：
+#   纯 busy loop 只有 WF_FORK，而 select_task_rq_yat_casched() 刻意在
+#   WF_FORK/WF_EXEC 早退（缓存热度表全零，算出来的放置没有信息量）。
+#   只有阻塞→唤醒（WF_TTWU）才会走到 AJLR。工作量的切分段数固定为
+#   64 段，保证两种策略拿到相同数量的唤醒事件。
+#
 # 内核参数的两个坑（实测得出，勿随意改回）：
 #   1) 必须用 arch/x86/boot/bzImage，不能用 ELF 的 vmlinux：QEMU 的 -kernel
 #      对 x86 ELF 需要 PVH note，本项目内核没有，会直接报
@@ -38,6 +54,9 @@
 #   ./compare_cfs_vs_yat.sh                          # 默认 4 任务 / 2e7 迭代 / CPU0
 #   ./compare_cfs_vs_yat.sh --tasks 8 --iters 50000000
 #   ./compare_cfs_vs_yat.sh --kernel ../arch/x86/boot/bzImage --timeout 300
+#   # 验证 A8（AJLR 真的被调用）：
+#   ./compare_cfs_vs_yat.sh --tasks 8 --iters 5000000 \
+#        --affinity none --sleep-us 200 --timeout 300
 #
 # 退出码：0 成功；1 前置检查/运行失败；3 guest 未能在内核上启用 Yat 调度类。
 set -uo pipefail
@@ -49,6 +68,8 @@ TASKS=4
 ITERS=20000000
 CPU=0
 CPUS=4
+AFFINITY=shared
+SLEEP_US=0
 # 默认用 bzImage 而非 vmlinux，原因见文件头注释第 1 条。
 KERNEL="$KERNEL_DIR/arch/x86/boot/bzImage"
 TIMEOUT=180
@@ -66,6 +87,14 @@ while [ $# -gt 0 ]; do
         --iters)   ITERS="$2"; shift 2 ;;
         --cpu)     CPU="$2"; shift 2 ;;
         --cpus)    CPUS="$2"; shift 2 ;;
+        --affinity)
+            AFFINITY="$2"
+            case "$AFFINITY" in
+                shared|none|spread) ;;
+                *) echo "未知亲和性: $AFFINITY（可选 shared|none|spread）" >&2; exit 2 ;;
+            esac
+            shift 2 ;;
+        --sleep-us) SLEEP_US="$2"; shift 2 ;;
         --kernel)  KERNEL="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --out)     RESULT_CSV="$2"; shift 2 ;;
@@ -116,7 +145,14 @@ mkdir -p "$BUILD_DIR"
 
 echo "=== CFS vs Yat-CASched 对比 ==="
 echo "内核:     $KERNEL"
-echo "负载:     tasks=$TASKS iters=$ITERS cpu=$CPU cpus=$CPUS"
+echo "负载:     tasks=$TASKS iters=$ITERS cpu=$CPU cpus=$CPUS affinity=$AFFINITY sleep_us=$SLEEP_US"
+if [ "$AFFINITY" = "shared" ]; then
+    echo "注意:     affinity=shared 时 nr_cpus_allowed=1，select_task_rq 不会调用"
+    echo "          调度类回调 —— 本轮数据**不能**用来评价 AJLR（A8）。"
+fi
+if [ "$SLEEP_US" = "0" ]; then
+    echo "注意:     sleep_us=0 时任务不阻塞，只有 WF_FORK，A8 同样不会触发。"
+fi
 echo ""
 
 echo "🔧 编译 yat_bench ..."
@@ -159,24 +195,34 @@ for arg in $(cat /proc/cmdline); do
     esac
 done
 
-# tasks/iters/cpu 通过 benchmark=<n>,<m>,<c> 传入
+# 负载参数通过 benchmark=<tasks>,<iters>,<cpu>,<affinity>,<sleep_us> 传入。
+# 逐段取而不是手写嵌套的 ${x%%}/${x#*} 剥壳，可读性更好、也不容易漏字段。
+#
+# 注意必须写 /bin/busybox cut：initramfs 里只放了 busybox **二进制**，
+# 没建 applet 符号链接，PATH 里找不到裸 `cut`。
 tasks=4
 iters=20000000
 cpu=0
+affinity=shared
+sleep_us=0
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         benchmark=*)
             v="${arg#benchmark=}"
-            tasks="${v%%,*}"
-            rest="${v#*,}"
-            iters="${rest%%,*}"
-            cpu="${rest#*,}"
+            tasks="$(echo "$v" | /bin/busybox cut -d, -f1)"
+            iters="$(echo "$v" | /bin/busybox cut -d, -f2)"
+            cpu="$(echo "$v" | /bin/busybox cut -d, -f3)"
+            affinity="$(echo "$v" | /bin/busybox cut -d, -f4)"
+            sleep_us="$(echo "$v" | /bin/busybox cut -d, -f5)"
             ;;
     esac
 done
+[ -n "$affinity" ] || affinity=shared
+[ -n "$sleep_us" ] || sleep_us=0
 
-echo "YATBENCH-BEGIN policy=$policy tasks=$tasks iters=$iters cpu=$cpu"
-/bin/yat_bench --policy "$policy" --tasks "$tasks" --iters "$iters" --cpu "$cpu"
+echo "YATBENCH-BEGIN policy=$policy tasks=$tasks iters=$iters cpu=$cpu affinity=$affinity sleep_us=$sleep_us"
+/bin/yat_bench --policy "$policy" --tasks "$tasks" --iters "$iters" --cpu "$cpu" \
+               --affinity "$affinity" --sleep-us "$sleep_us"
 rc=$?
 echo "YATBENCH-EXIT status=$rc"
 echo "YATBENCH-END"
@@ -185,9 +231,12 @@ echo "YATBENCH-END"
 # 这些计数是 per-CPU 累加值，与调度行为是否真的发生直接相关 ——
 # 若 jobs_placed / accel_inserts 恒为 0，说明 Yat 调度类根本没被调用过，
 # 此时"性能更好"只可能是没走调度路径的假象。
+# placements（A8 新增）必须一起 dump：stats.jobs_placed 只回答「算过几次」，
+# placements 的 verdict 才回答「算完有没有被内核采纳」。少了它就无法区分
+# 「AJLR 在算但决策被亲和性/回落逻辑推翻」与「AJLR 真的接管了放置」。
 if [ -d /sys/kernel/debug/yat_casched ]; then
     echo "YATDEBUG-BEGIN"
-    for f in stats ready_pool dags; do
+    for f in stats ready_pool dags placements; do
         echo "--- $f ---"
         /bin/busybox cat "/sys/kernel/debug/yat_casched/$f" 2>/dev/null
     done
@@ -246,7 +295,7 @@ run_one() {
         -nographic \
         -no-reboot \
         -accel tcg \
-        -append "console=ttyS0,115200 panic=1 nokaslr yatbench=${policy} benchmark=${TASKS},${ITERS},${CPU}" \
+        -append "console=ttyS0,115200 panic=1 nokaslr yatbench=${policy} benchmark=${TASKS},${ITERS},${CPU},${AFFINITY},${SLEEP_US}" \
         > "$log" 2>&1
 
     local rc=$?
@@ -277,21 +326,87 @@ run_one() {
     fi
 
     # 把 A6 的 debugfs 计数器回显到结果里，并标注「AJLR 是否真的参与了调度」。
-    # 实测：普通任务（sched_setscheduler 到 SCHED_YAT_CASCHED）只会在
-    # yat_ajlr_enqueue_task() 里绑定一个 job，**不会**进入 global_ready_pool；
-    # pick_next 走的是 rq->yat_casched.tasks。因此 jobs_placed==0 是当前实现的
-    # 真实状态，不是脚本或内核故障 —— 但必须提醒读者不要把两件事混为一谈：
-    # 本轮测到的是「调度类切换」的效果，不是「AJLR 作业分配」的效果。
+    #
+    # 历史背景：A8 之前 yat_ajlr_enqueue_task() 只绑定 job、不选核，pick_next
+    # 读的是本地链表，因此 jobs_placed==0 是当时的真实状态。A8 把
+    # select_task_rq 接成真正的选核路径后，该值应当非零；因此这里不再把
+    # jobs_placed==0 当成「已解释的正常现象」，而是当成**回归信号**。
     if grep -q '^YATDEBUG-BEGIN' "$log"; then
         echo "  ── A6 计数器 (policy=$policy) ──" >&2
         sed -n '/YATDEBUG-BEGIN/,/^--- ready_pool ---/p' "$log" \
-            | grep -E 'balance_|jobs_|history_|accel_|nr_cpu_ids' \
+            | grep -E 'balance_|jobs_|history_|accel_|select_|enq_|ttwu_|pick_|deq_|place_|nr_cpu_ids' \
             | sed 's/^/     /' >&2
-        local placed
-        placed="$(sed -n '/^jobs_placed/,+0p' "$log" | awk '{print $2}' | head -1)"
+
+        # 读取单个计数器（stats 每行 "name  value"）。
+        # 注意 tr -d '\r'：串口是 CRLF，不剥掉会让 $2 变成 "0\r"，
+        # 后续 $(()) 直接报 "invalid arithmetic operator"。
+        counter() {
+            sed -n "/^$1[[:space:]]/p" "$log" | tr -d '\r' | awk '{print $2}' | head -1
+        }
+
+        local placed calls not_ttwu nojob sticky_idle sticky_intv nocore decided
+        local enq calls_allowed
+        placed="$(counter jobs_placed)"
+        calls="$(counter select_calls)"
+        not_ttwu="$(counter select_not_ttwu)"
+        nojob="$(counter select_nojob)"
+        sticky_idle="$(counter select_sticky_idle)"
+        sticky_intv="$(counter select_sticky_intv)"
+        nocore="$(counter select_nocore)"
+        decided="$(counter select_decided)"
+        enq="$(counter enq_calls)"
+        calls_allowed="$(counter enq_cpus_allowed)"
+        local hit miss pend
+        hit="$(counter place_hit)"
+        miss="$(counter place_miss)"
+        pend="$(counter place_pending)"
+
         if [ "${placed:-x}" = "0" ]; then
-            echo "  ℹ️  jobs_placed=0：本轮未触发 AJLR 作业放置（见脚本内注释）。" >&2
-            echo "      这表示差异来自「调度类切换」，而非 AJLR 分配算法。" >&2
+            echo "  ⚠️  jobs_placed=0：AJLR 未完成任何作业放置。" >&2
+            # 用 select_* 探针区分「回调没被调用」与「调用了但早退」。
+            # 这正是加这些计数器的目的 —— 只看 jobs_placed 无法判断。
+            if [ "${calls:-0}" = "0" ]; then
+                echo "      原因：select_task_rq_yat_casched() **一次都没被调用**。" >&2
+                echo "      已入队 ${enq:-0} 次，累计 nr_cpus_allowed=${calls_allowed:-0}" >&2
+                echo "      （平均每个任务可运行的 CPU 数 = 后者/前者）" >&2
+                if [ "${calls_allowed:-0}" = "${enq:-0}" ] && [ "${enq:-0}" != "0" ]; then
+                    echo "      ⇒ 平均为 1：任务被 pin 死在单核，core.c 包装层直接" >&2
+                    echo "        cpumask_any() 返回，根本不会转发给调度类。" >&2
+                    echo "        请检查 guest 内是否有 cpuset/亲和性限制（--affinity none 应无限制）。" >&2
+                else
+                    echo "      ⇒ 平均 > 1：包装层条件满足，说明 select_task_rq 未被调用是" >&2
+                    echo "        别的原因（如任务始终 on_cpu、走 ttwu wakelist 快路径）。" >&2
+                fi
+            else
+                echo "      原因：回调被调用 ${calls} 次，但全部提前返回：" >&2
+                echo "        非唤醒路径(WF_FORK/EXEC) ${not_ttwu:-0}" >&2
+                echo "        建 job 失败             ${nojob:-0}" >&2
+                echo "        节流-目标核空闲         ${sticky_idle:-0}" >&2
+                echo "        节流-不足最小间隔       ${sticky_intv:-0}" >&2
+                echo "        找不到可用核心          ${nocore:-0}" >&2
+                echo "        真正完成决策            ${decided:-0}" >&2
+            fi
+        elif [ "${decided:-1}" != "0" ] && [ "${placed:-0}" = "0" ]; then
+            echo "  ⚠️  select_decided 非零但 jobs_placed==0：计数器与放置逻辑不一致，" >&2
+            echo "      属于内核实现缺陷，需检查 yat_find_best_core_for_job() 里的 INC 位置。" >&2
+        fi
+
+        # AJLR 接管率：place_* 是 pick 时累加的，不受「作业随任务退出而释放」影响。
+        # placements 表在 workload 结束后必然为空，因此这三个量才是可留存的证据。
+        if [ "$(counter place_hit)" != "" ]; then
+            local total_p
+            total_p=$(( ${hit:-0} + ${miss:-0} + ${pend:-0} ))
+            if [ "$total_p" -gt 0 ] 2>/dev/null; then
+                echo "  ── AJLR 接管率 (policy=$policy) ──" >&2
+                echo "     命中 assigned_cpu: ${hit:-0}  否决: ${miss:-0}  未决策: ${pend:-0}  合计: $total_p" >&2
+                echo "     命中率: $(( ${hit:-0} * 100 / total_p ))%（pick 时按 assigned_cpu 与运行核比对）" >&2
+            fi
+        fi
+        # placements 的 verdict 分布 = AJLR 的真实接管率。
+        if grep -q '^--- placements ---' "$log"; then
+            echo "  ── A8 placements (policy=$policy) ──" >&2
+            sed -n '/^--- placements ---/,/^YATDEBUG-END/p' "$log" \
+                | sed '1d;$d' | sed 's/^/     /' >&2
         fi
     fi
 
@@ -324,7 +439,7 @@ fi
 # 4. 落盘 CSV
 # ---------------------------------------------------------------
 {
-    echo "policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online"
+    echo "policy,tasks,iters,cpu,sum_wall_ns,min_wall_ns,max_wall_ns,sum_work_units,vol_ctx,invol_ctx,cpus_online,affinity,sleep_us"
     printf '%s\n' "$CFS_LINE" | sed 's/^YATCSV,//'
     printf '%s\n' "$YAT_LINE" | sed 's/^YATCSV,//'
 } > "$RESULT_CSV"
@@ -335,6 +450,7 @@ fi
 # 字段位置（去掉 YATCSV 前缀后）：
 #   1 policy  2 tasks  3 iters  4 cpu  5 sum_wall  6 min_wall  7 max_wall
 #   8 sum_work  9 vol_ctx  10 invol_ctx  11 cpus_online
+#   12 affinity  13 sleep_us（A8 追加，判断这组数据能否谈 AJLR 的依据）
 field() { printf '%s' "$1" | tr -d '\r' | sed 's/^YATCSV,//' | cut -d, -f"$2"; }
 
 C_POLICY=$(field "$CFS_LINE" 1);  Y_POLICY=$(field "$YAT_LINE" 1)
@@ -365,6 +481,19 @@ echo " sum_wall 比 (yat/cfs): $WALL_RATIO   （<1 表示 Yat 更快）"
 echo " min_wall 比 (yat/cfs): $MIN_RATIO"
 echo " max_wall 比 (yat/cfs): $MAX_RATIO"
 echo " 上下文切换差 (yat-cfs): vol=$((Y_VOL - C_VOL))  invol=$((Y_INV - C_INV))"
+echo "------------------------------------------"
+echo " 本轮负载: affinity=$AFFINITY sleep_us=$SLEEP_US"
+if [ "$AFFINITY" = "shared" ] || [ "$SLEEP_US" = "0" ]; then
+    echo " ⚠️  这组数据**不能**用来评价 AJLR（A8）："
+    [ "$AFFINITY" = "shared" ] && \
+        echo "     affinity=shared → nr_cpus_allowed=1，select_task_rq 不调调度类"
+    [ "$SLEEP_US" = "0" ] && \
+        echo "     sleep_us=0    → 无 WF_TTWU，唤醒路径不发生"
+    echo "     只能解读为「同核竞争下时间片分配」的差异。"
+else
+    echo " ✅ 这组负载满足 A8 的前提（可跨核 + 有唤醒），"
+    echo "    placements 的 ok/denied 才是 AJLR 真实接管率的证据。"
+fi
 echo "------------------------------------------"
 echo " CSV: $RESULT_CSV"
 echo " 日志: $OUT_DIR/qemu_cfs.log  $OUT_DIR/qemu_yat.log"
