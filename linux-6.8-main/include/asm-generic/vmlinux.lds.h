@@ -123,7 +123,20 @@
  * The order of the sched class addresses are important, as they are
  * used to determine the order of the priority of each sched class in
  * relation to each other.
+ *
+ * NOTE: the Yat_CASched class is only emitted when it is configured in.
+ * Keeping the slot conditional means an ordering mistake can only ever
+ * come from an explicit edit of this file, and sched_init() re-checks the
+ * resulting order at boot (see kernel/sched/core.c) so a mistake panics
+ * with a message instead of silently mis-prioritising.
  */
+#ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
+#define YAT_CASCHED_SCHED_CLASS			\
+	*(__yat_casched_sched_class)
+#else
+#define YAT_CASCHED_SCHED_CLASS
+#endif
+
 #define SCHED_DATA				\
 	STRUCT_ALIGN();				\
 	__sched_class_highest = .;		\
@@ -131,7 +144,7 @@
 	*(__dl_sched_class)			\
 	*(__rt_sched_class)			\
 	*(__fair_sched_class)			\
-	 *(__yat_casched_sched_class) \
+	YAT_CASCHED_SCHED_CLASS			\
 	*(__idle_sched_class)			\
 	__sched_class_lowest = .;
 

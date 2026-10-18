@@ -46,7 +46,13 @@
 #include <linux/livepatch_sched.h>
 #include <linux/uidgid_types.h>
 #include <asm/kmap_size.h>
-#include<linux/sched/yat_casched.h>
+/*
+ * Yat_CASched: struct sched_yat_casched_entity is embedded in task_struct
+ * below, so the full definition (not just a forward declaration) must be
+ * visible here. kernel/sched/sched.h includes the same header, which is
+ * harmless because it is guarded, but this is the only *required* site.
+ */
+#include <linux/sched/yat_casched.h>
 /* task_struct member predeclarations (sorted alphabetically): */
 struct audit_context;
 struct bio_list;

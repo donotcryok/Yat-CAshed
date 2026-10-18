@@ -9949,9 +9949,18 @@ void __init sched_init(void)
 
 	/* Make sure the linker didn't screw up */
 #ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
-	BUG_ON(&idle_sched_class != &yat_casched_sched_class + 1 ||
-	       &yat_casched_sched_class != &fair_sched_class + 1 ||
-	       &fair_sched_class != &rt_sched_class + 1 ||
+	/*
+	 * The Yat_CASched class is injected into SCHED_DATA between fair and
+	 * idle. If that placement is ever broken the class priority order
+	 * silently inverts, and the resulting symptoms (tasks never running,
+	 * or idle losing to a normal task) are extremely hard to trace back
+	 * to the linker script. Fail loudly, naming the offending neighbour.
+	 */
+	if (unlikely(&yat_casched_sched_class != &fair_sched_class + 1))
+		panic("sched: Yat_CASched sched_class must directly FOLLOW fair_sched_class; check YAT_CASCHED_SCHED_CLASS placement in SCHED_DATA (include/asm-generic/vmlinux.lds.h)\n");
+	if (unlikely(&idle_sched_class != &yat_casched_sched_class + 1))
+		panic("sched: Yat_CASched sched_class must directly PRECEDE idle_sched_class; check YAT_CASCHED_SCHED_CLASS placement in SCHED_DATA (include/asm-generic/vmlinux.lds.h)\n");
+	BUG_ON(&fair_sched_class != &rt_sched_class + 1 ||
 	       &rt_sched_class   != &dl_sched_class + 1);
 #else
 	BUG_ON(&idle_sched_class != &fair_sched_class + 1 ||
@@ -10025,8 +10034,14 @@ void __init sched_init(void)
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);
 #ifdef CONFIG_SCHED_CLASS_YAT_CASCHED
-    printk("======init yat_casched rq======\n");
-    init_yat_casched_rq(&rq->yat_casched);
+		/*
+		 * 每个 CPU 只初始化本 rq 的字段；全局结构（就绪池、加速表、
+		 * 默认 DAG、历史表）由 init_yat_casched_rq() 内部的
+		 * yat_global_init_once() 保证只构建一次。这里不能有 printk：
+		 * sched_init() 在 for_each_possible_cpu() 里跑，NR_CPUS 行日志
+		 * 会污染启动时序且毫无信息量。
+		 */
+		init_yat_casched_rq(&rq->yat_casched);
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
